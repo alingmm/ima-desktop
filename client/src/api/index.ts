@@ -101,6 +101,17 @@ export const chatApi = {
       };
     });
   },
+  saveToKnowledge: (params: {
+    knowledge_base_id?: string;
+    knowledge_base_name?: string;
+    question?: string;
+    answer?: string;
+    message_id?: string;
+  }) =>
+    request<{ success: boolean; knowledge_base_id: string; document_id: string }>('/chat/save-to-knowledge', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
 };
 
 // Knowledge Base APIs
@@ -149,6 +160,11 @@ export const knowledgeApi = {
     }),
   removeCollaborator: (id: string) =>
     request<{ success: boolean }>(`/knowledge/collaborators/${id}`, { method: 'DELETE' }),
+  addFromUrl: (baseId: string, url: string, title?: string) =>
+    request<{ document_id: string; title: string; status: string }>('/knowledge/add-from-url', {
+      method: 'POST',
+      body: JSON.stringify({ baseId, url, title }),
+    }),
 };
 
 // Video APIs
@@ -186,6 +202,11 @@ export const searchApi = {
       method: 'POST',
       body: JSON.stringify({ query, results }),
     }),
+  browse: (url: string) =>
+    request<any>('/search/browse', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
   getHistory: () => request<{ history: any[] }>('/search/history'),
   deleteHistory: (id: string) =>
     request<{ success: boolean }>(`/search/history/${id}`, { method: 'DELETE' }),
@@ -205,6 +226,38 @@ export const userApi = {
     request<{ settings: any }>('/user/settings', {
       method: 'PUT',
       body: JSON.stringify(data),
+    }),
+};
+
+// Notes APIs
+export const notesApi = {
+  getNotes: (params?: { search?: string; tag?: string; sort_by?: string; order?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.search) query.set('search', params.search);
+    if (params?.tag) query.set('tag', params.tag);
+    if (params?.sort_by) query.set('sort_by', params.sort_by);
+    if (params?.order) query.set('order', params.order);
+    const qs = query.toString();
+    return request<{ notes: any[] }>(`/notes${qs ? `?${qs}` : ''}`);
+  },
+  getNote: (id: string) => request<{ note: any }>(`/notes/${id}`),
+  getTags: () => request<{ tags: string[] }>('/notes/tags'),
+  createNote: (data: { title?: string; content?: string; tags?: string[]; is_pinned?: boolean }) =>
+    request<{ note: any }>('/notes', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateNote: (id: string, data: any) =>
+    request<{ note: any }>(`/notes/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteNote: (id: string) =>
+    request<{ success: boolean }>(`/notes/${id}`, { method: 'DELETE' }),
+  batchDelete: (ids: string[]) =>
+    request<{ success: boolean; deleted_count: number }>('/notes/batch-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
     }),
 };
 

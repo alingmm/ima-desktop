@@ -11,6 +11,7 @@ import videoRoutes from './routes/video.js';
 import searchRoutes from './routes/search.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/user.js';
+import notesRoutes from './routes/notes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,6 +34,7 @@ app.use('/api/knowledge', knowledgeRoutes);
 app.use('/api/video', videoRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/notes', notesRoutes);
 
 // Serve static files in production
 const clientDistPath = path.resolve(__dirname, '../../client/dist');

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, ChevronDown, Copy, ThumbsUp, ThumbsDown, RefreshCw } from 'lucide-react';
-import { chatApi } from '../api';
-import type { Message, Model } from '../types';
+import { Send, ChevronDown, Copy, ThumbsUp, ThumbsDown, RefreshCw, Database, Plus, X, Check } from 'lucide-react';
+import { chatApi, knowledgeApi } from '../api';
+import type { Message, Model, KnowledgeBase } from '../types';
 import ReactMarkdown from 'react-markdown';
 
 function ChatPage() {
@@ -14,6 +14,13 @@ function ChatPage() {
   const [isStreaming, setIsStreaming] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [showKnowledgeModal, setShowKnowledgeModal] = useState(false);
+  const [selectedMessageIdx, setSelectedMessageIdx] = useState<number | null>(null);
+  const [newKnowledgeBaseName, setNewKnowledgeBaseName] = useState('');
+  const [showNewBaseInput, setShowNewBaseInput] = useState(false);
+  const [selectedBaseId, setSelectedBaseId] = useState<string | null>(null);
+  const [savingToKnowledge, setSavingToKnowledge] = useState(false);
 
   // Load models on mount
   useEffect(() => {
@@ -77,6 +84,60 @@ function ChatPage() {
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
     }
   }, [input]);
+
+  // Load knowledge bases
+  const loadKnowledgeBases = async () => {
+    try {
+      const res = await knowledgeApi.getBases();
+      setKnowledgeBases(res.bases);
+    } catch (error) {
+      console.error('Failed to load knowledge bases:', error);
+    }
+  };
+
+  const openKnowledgeModal = (msgIdx: number) => {
+    setSelectedMessageIdx(msgIdx);
+    setSelectedBaseId(null);
+    setNewKnowledgeBaseName('');
+    setShowNewBaseInput(false);
+    setShowKnowledgeModal(true);
+    loadKnowledgeBases();
+  };
+
+  const handleSaveToKnowledge = async () => {
+    if (selectedMessageIdx === null) return;
+    const msg = messages[selectedMessageIdx];
+    const prevMsg = selectedMessageIdx > 0 ? messages[selectedMessageIdx - 1] : null;
+    const question = prevMsg?.role === 'user' ? prevMsg.content : '';
+    const answer = msg.role === 'assistant' ? msg.content : '';
+
+    if (!selectedBaseId && !newKnowledgeBaseName.trim()) {
+      alert('请选择知识库或输入新知识库名称');
+      return;
+    }
+
+    try {
+      setSavingToKnowledge(true);
+      await chatApi.saveToKnowledge({
+        knowledge_base_id: selectedBaseId || undefined,
+        knowledge_base_name: showNewBaseInput ? newKnowledgeBaseName.trim() : undefined,
+        question,
+        answer,
+      });
+      setShowKnowledgeModal(false);
+      setSavingToKnowledge(false);
+      // 显示成功提示
+      const toast = document.createElement('div');
+      toast.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg z-50 text-sm';
+      toast.textContent = '已成功保存到知识库';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 2000);
+    } catch (err) {
+      console.error('Failed to save to knowledge:', err);
+      setSavingToKnowledge(false);
+      alert('保存失败，请重试');
+    }
+  };
 
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return;
@@ -323,6 +384,17 @@ function ChatPage() {
                       <button className="p-1 hover:bg-[var(--color-sidebar-hover)] rounded text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors">
                         <RefreshCw size={14} />
                       </button>
+                      <div className="w-px h-4 bg-[var(--color-border)] mx-1" />
+                      <button
+                        onClick={() => openKnowledgeModal(idx)}
+                        className="p-1 hover:bg-[var(--color-sidebar-hover)] rounded text-[var(--color-text-muted)] hover:text-blue-400 transition-colors group"
+                        title="加入知识库"
+                      >
+                        <Database size={14} />
+                        <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-[var(--color-card-bg)] border border-[var(--color-border)] px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+                          加入知识库
+                        </span>
+                      </button>
                     </div>
                   )}
                 </div>
@@ -367,6 +439,114 @@ function ChatPage() {
           </p>
         </div>
       </div>
+
+      {/* Save to Knowledge Modal */}
+      {showKnowledgeModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowKnowledgeModal(false)}>
+          <div
+            className="bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-2xl w-full max-w-md mx-4 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)]">
+              <h3 className="font-medium text-white">加入知识库</h3>
+              <button
+                onClick={() => setShowKnowledgeModal(false)}
+                className="p-1.5 hover:bg-[var(--color-sidebar-hover)] rounded-lg text-[var(--color-text-muted)] transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-5 max-h-96 overflow-y-auto">
+              {/* 新建知识库输入 */}
+              <div className="mb-4">
+                <button
+                  onClick={() => setShowNewBaseInput(!showNewBaseInput)}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-blue-500/20 to-purple-500/20 border border-blue-500/30 text-blue-400 rounded-lg hover:from-blue-500/30 hover:to-purple-500/30 transition-all text-sm font-medium"
+                >
+                  <Plus size={16} />
+                  创建新知识库
+                </button>
+                {showNewBaseInput && (
+                  <input
+                    type="text"
+                    value={newKnowledgeBaseName}
+                    onChange={(e) => { setNewKnowledgeBaseName(e.target.value); setSelectedBaseId(null); }}
+                    placeholder="输入知识库名称..."
+                    className="w-full mt-3 px-4 py-2.5 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded-lg text-white text-sm outline-none focus:border-blue-500"
+                    autoFocus
+                  />
+                )}
+              </div>
+
+              <div className="relative">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="flex-1 h-px bg-[var(--color-border)]"></div>
+                  <span className="text-xs text-[var(--color-text-muted)]">或选择已有知识库</span>
+                  <div className="flex-1 h-px bg-[var(--color-border)]"></div>
+                </div>
+              </div>
+
+              {/* 知识库列表 */}
+              <div className="space-y-2">
+                {knowledgeBases.length === 0 ? (
+                  <p className="text-center text-[var(--color-text-muted)] text-sm py-4">
+                    暂无知识库，创建一个新的吧
+                  </p>
+                ) : (
+                  knowledgeBases.map((base) => (
+                    <div
+                      key={base.id}
+                      onClick={() => { setSelectedBaseId(base.id); setShowNewBaseInput(false); setNewKnowledgeBaseName(''); }}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-lg cursor-pointer transition-all border ${
+                        selectedBaseId === base.id
+                          ? 'bg-blue-500/20 border-blue-500/50'
+                          : 'bg-[var(--color-bg-secondary)] border-[var(--color-border)] hover:border-blue-500/30'
+                      }`}
+                    >
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                        selectedBaseId === base.id ? 'bg-blue-500/30 text-blue-400' : 'bg-[var(--color-card-bg)] text-[var(--color-text-muted)]'
+                      }`}>
+                        <Database size={16} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{base.name}</p>
+                        <p className="text-xs text-[var(--color-text-muted)] truncate">{base.description || '暂无描述'}</p>
+                      </div>
+                      {selectedBaseId === base.id && (
+                        <Check size={18} className="text-blue-400 flex-shrink-0" />
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 px-5 py-4 border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
+              <button
+                onClick={() => setShowKnowledgeModal(false)}
+                className="flex-1 px-4 py-2.5 text-[var(--color-text-muted)] hover:text-white hover:bg-[var(--color-sidebar-hover)] rounded-lg transition-colors text-sm"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveToKnowledge}
+                disabled={savingToKnowledge || (!selectedBaseId && !newKnowledgeBaseName.trim())}
+                className="flex-1 px-4 py-2.5 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg hover:opacity-90 transition-opacity text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {savingToKnowledge ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    保存中...
+                  </>
+                ) : (
+                  '保存'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

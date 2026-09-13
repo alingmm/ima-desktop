@@ -91,3 +91,23 @@ export interface Collaborator {
   invited_by: string;
   invited_at: string;
 }
+
+export interface Note {
+  id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  is_pinned: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BrowseResult {
+  url: string;
+  title: string;
+  description: string;
+  content: string;
+  content_length: number;
+  is_truncated: boolean;
+  status: number;
+}

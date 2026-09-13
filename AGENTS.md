@@ -3,7 +3,7 @@
 ## 项目概览
 
 AI 工作台应用，界面风格类似腾讯ima。深色主题，现代简洁的专业工具风格。
-完整的全栈应用，包含大模型对话、知识库管理、视频生成、联网搜索等功能。
+完整的全栈应用，包含大模型对话、知识库管理、视频生成、联网搜索、笔记等功能。
 
 ### 技术栈
 - **前端**: React 18 + TypeScript + Vite + TailwindCSS v4 + Lucide Icons
@@ -79,6 +79,7 @@ pnpm start
 | knowledge_collaborators | 知识库协作者 |
 | video_tasks | 视频生成任务 |
 | search_history | 搜索历史 |
+| notes | 笔记 |
 
 ### 向量检索
 使用 pgvector 扩展，通过 `match_document_chunks` 函数进行语义搜索。
@@ -98,6 +99,7 @@ pnpm start
 - GET `/conversations/:id/messages` - 获取消息列表
 - POST `/stream` - 流式对话 (SSE)
 - POST `/send` - 非流式对话
+- POST `/save-to-knowledge` - 将对话内容保存到知识库
 
 ### 知识库 `/api/knowledge`
 - GET `/bases` - 获取知识库列表
@@ -113,6 +115,7 @@ pnpm start
 - POST `/bases/:id/share` - 创建分享链接
 - POST `/bases/:id/collaborators` - 添加协作者
 - DELETE `/collaborators/:id` - 移除协作者
+- POST `/bases/:id/add-from-url` - 从 URL 添加文档到知识库
 
 ### 视频生成 `/api/video`
 - GET `/tasks` - 获取任务列表
@@ -126,7 +129,17 @@ pnpm start
 - POST `/images` - 图片搜索
 - POST `/summarize` - 搜索结果总结
 - POST `/summarize/stream` - 流式总结 (SSE)
+- POST `/browse` - URL 网页内容解析提取
 - GET `/history` - 搜索历史
+
+### 笔记 `/api/notes`
+- GET `/` - 获取笔记列表（支持搜索、标签过滤）
+- GET `/tags` - 获取所有标签
+- GET `/:id` - 获取单条笔记
+- POST `/` - 创建笔记
+- PUT `/:id` - 更新笔记
+- DELETE `/:id` - 删除笔记
+- POST `/batch-delete` - 批量删除笔记
 
 ### 用户 `/api/user`
 - GET `/profile` - 获取用户资料

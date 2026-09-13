@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { EmbeddingClient, LLMClient, Config, HeaderUtils } from 'coze-coding-dev-sdk';
 import { getSupabaseClient } from '../storage/database/supabase-client.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
+import { splitTextIntoChunks } from '../utils/text.js';
 
 const router: import("express").Router = Router();
 const config = new Config();
@@ -448,5 +449,140 @@ function chunkText(text: string, chunkSize: number): string[] {
 
   return chunks;
 }
+
+// 从 URL 添加网页到知识库
+router.post('/add-from-url', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { baseId, url, title: customTitle } = req.body;
+
+    if (!baseId || !url) {
+      res.status(400).json({ error: 'baseId and url are required' });
+      return;
+    }
+
+    const supabase = getSupabaseClient();
+
+    // 验证知识库归属
+    const { data: kb, error: kbError } = await supabase
+      .from('knowledge_bases')
+      .select('*')
+      .eq('id', baseId)
+      .eq('user_id', req.userId)
+      .single();
+
+    if (kbError || !kb) {
+      res.status(403).json({ error: 'Knowledge base not found or access denied' });
+      return;
+    }
+
+    // 获取网页内容
+    let pageTitle = '';
+    let pageContent = '';
+
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; AI-Workbench/1.0)',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+
+      if (!response.ok) {
+        res.status(400).json({ error: `Failed to fetch URL: ${response.statusText}` });
+        return;
+      }
+
+      const html = await response.text();
+
+      // 提取标题
+      const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      pageTitle = customTitle || (titleMatch ? titleMatch[1].trim() : url);
+
+      // 提取正文
+      pageContent = html
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
+        .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '')
+        .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
+        .replace(/<aside[^>]*>[\s\S]*?<\/aside>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 50000);
+    } catch (fetchErr: any) {
+      res.status(400).json({ error: `Failed to fetch URL: ${fetchErr?.message || fetchErr}` });
+      return;
+    }
+
+    // 创建文档
+    const docId = uuidv4();
+    const { error: docError } = await supabase.from('documents').insert({
+      id: docId,
+      knowledge_base_id: baseId,
+      filename: `${pageTitle || url}.html`,
+      file_path: url,
+      file_size: pageContent.length,
+      content_preview: pageContent.slice(0, 200),
+      chunk_count: 0,
+      status: 'processing',
+    });
+
+    if (docError) throw docError;
+
+    // 异步向量化
+    (async () => {
+      try {
+        const chunks = splitTextIntoChunks(pageContent, 500, 50);
+
+        const customHeaders = HeaderUtils.extractForwardHeaders(req.headers as Record<string, string>);
+        const embedClient = new EmbeddingClient({ customHeaders } as any);
+
+        for (let i = 0; i < chunks.length; i++) {
+          try {
+            const chunkId = uuidv4();
+            const embedding = await embedClient.embedText(chunks[i]);
+            if (embedding) {
+              await supabase.from('document_chunks').insert({
+                id: chunkId,
+                document_id: docId,
+                knowledge_base_id: baseId,
+                chunk_index: i,
+                content: chunks[i],
+                embedding: JSON.stringify(embedding),
+              });
+            }
+          } catch (chunkErr) {
+            console.error('Chunk embedding error:', chunkErr);
+          }
+        }
+
+        await supabase.from('documents').update({
+          chunk_count: chunks.length,
+          status: 'completed',
+        }).eq('id', docId);
+      } catch (err) {
+        console.error('Embedding error for URL document:', err);
+        await supabase.from('documents').update({ status: 'error' }).eq('id', docId);
+      }
+    })();
+
+    res.json({
+      document_id: docId,
+      title: pageTitle,
+      content_preview: pageContent.slice(0, 200),
+      status: 'processing',
+    });
+  } catch (error: any) {
+    console.error('Add from URL error:', error);
+    res.status(500).json({ error: error?.message || 'Failed to add from URL' });
+  }
+});
 
 export default router;

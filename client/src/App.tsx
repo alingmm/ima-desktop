@@ -2,11 +2,12 @@ import { useState } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatPage from './pages/ChatPage';
 import KnowledgePage from './pages/KnowledgePage';
+import NotesPage from './pages/NotesPage';
 import VideoPage from './pages/VideoPage';
 import SearchPage from './pages/SearchPage';
 import SettingsPage from './pages/SettingsPage';
 
-export type PageType = 'chat' | 'knowledge' | 'video' | 'search' | 'settings';
+export type PageType = 'chat' | 'knowledge' | 'notes' | 'video' | 'search' | 'settings';
 
 function App() {
   const [currentPage, setCurrentPage] = useState<PageType>('chat');
@@ -17,6 +18,8 @@ function App() {
         return <ChatPage />;
       case 'knowledge':
         return <KnowledgePage />;
+      case 'notes':
+        return <NotesPage />;
       case 'video':
         return <VideoPage />;
       case 'search':

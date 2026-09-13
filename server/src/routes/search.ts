@@ -177,4 +177,86 @@ router.delete('/history/:id', authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
+// URL 解析 / 网页内容提取
+router.post('/browse', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { url } = req.body;
+
+    if (!url) {
+      res.status(400).json({ error: 'URL is required' });
+      return;
+    }
+
+    // 简单验证 URL 格式
+    try {
+      new URL(url);
+    } catch {
+      res.status(400).json({ error: 'Invalid URL format' });
+      return;
+    }
+
+    // 使用 fetch 获取网页内容
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; AI-Workbench/1.0)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!response.ok) {
+      res.status(response.status).json({ error: `Failed to fetch URL: ${response.statusText}` });
+      return;
+    }
+
+    const html = await response.text();
+
+    // 提取标题和正文
+    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const title = titleMatch ? titleMatch[1].trim() : '';
+
+    // 提取 meta description
+    const descMatch = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i) ||
+                      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']/i);
+    const description = descMatch ? descMatch[1].trim() : '';
+
+    // 简单的正文提取：移除 script/style 标签，提取文本
+    let text = html
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
+      .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '')
+      .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
+      .replace(/<aside[^>]*>[\s\S]*?<\/aside>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    // 限制文本长度
+    const maxLength = 50000;
+    const isTruncated = text.length > maxLength;
+    if (isTruncated) {
+      text = text.slice(0, maxLength);
+    }
+
+    res.json({
+      url,
+      title,
+      description,
+      content: text,
+      content_length: text.length,
+      is_truncated: isTruncated,
+      status: response.status,
+    });
+  } catch (error: any) {
+    console.error('Browse error:', error?.message || error);
+    res.status(500).json({ error: error?.message || 'Failed to browse URL' });
+  }
+});
+
 export default router;

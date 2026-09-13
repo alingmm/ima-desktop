@@ -17,19 +17,22 @@ export function authMiddleware(req: AuthRequest, res: Response, next: NextFuncti
 
   // Upsert user to ensure it exists in the database
   const supabase = getSupabaseClient();
-  supabase
-    .from('users')
-    .upsert(
-      { id: finalUserId, email: finalUserEmail, name: '用户' },
-      { onConflict: 'email' }
+  // 使用 try-catch 包裹，避免 PromiseLike 类型问题
+  Promise.resolve()
+    .then(() =>
+      supabase
+        .from('users')
+        .upsert(
+          { id: finalUserId, email: finalUserEmail, name: '用户' },
+          { onConflict: 'email' }
+        )
     )
     .then(() => {
       req.userId = finalUserId;
       req.userEmail = finalUserEmail;
       next();
     })
-    .catch((_err) => {
-      // Even if upsert fails, continue with the request
+    .catch((_err: any) => {
       req.userId = finalUserId;
       req.userEmail = finalUserEmail;
       next();

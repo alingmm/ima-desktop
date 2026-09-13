@@ -1,8 +1,9 @@
 import { Router } from 'express';
-import { LLMClient, Config, HeaderUtils } from 'coze-coding-dev-sdk';
+import { LLMClient, Config, HeaderUtils, EmbeddingClient } from 'coze-coding-dev-sdk';
 import { getSupabaseClient } from '../storage/database/supabase-client.js';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { v4 as uuidv4 } from 'uuid';
+import { splitTextIntoChunks } from '../utils/text.js';
 
 const router: import("express").Router = Router();
 const config = new Config();
@@ -255,6 +256,115 @@ router.post('/send', authMiddleware, async (req: AuthRequest, res) => {
   } catch (error) {
     console.error('Chat error:', error);
     res.status(500).json({ error: 'Chat failed' });
+  }
+});
+
+// 将对话内容保存到知识库
+router.post('/save-to-knowledge', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const user_id = req.userId;
+    const { knowledge_base_id, knowledge_base_name, question, answer, message_id } = req.body;
+    const supabase = getSupabaseClient();
+
+    if (!question && !answer) {
+      res.status(400).json({ error: 'Question and answer cannot both be empty' });
+      return;
+    }
+
+    let baseId = knowledge_base_id;
+
+    // 如果没有指定知识库，创建一个新的
+    if (!baseId) {
+      if (!knowledge_base_name) {
+        res.status(400).json({ error: 'knowledge_base_id or knowledge_base_name is required' });
+        return;
+      }
+      baseId = uuidv4();
+      const { error: kbError } = await supabase
+        .from('knowledge_bases')
+        .insert({
+          id: baseId,
+          user_id,
+          name: knowledge_base_name,
+          description: '从对话创建的知识库',
+        });
+      if (kbError) throw kbError;
+    } else {
+      // 验证知识库归属
+      const { data: kb } = await supabase
+        .from('knowledge_bases')
+        .select('id')
+        .eq('id', baseId)
+        .eq('user_id', user_id)
+        .single();
+      if (!kb) {
+        res.status(403).json({ error: 'Knowledge base not found or access denied' });
+        return;
+      }
+    }
+
+    // 构造文档内容
+    const docTitle = question?.slice(0, 100) || '对话片段';
+    const docContent = `Q: ${question || ''}\n\nA: ${answer || ''}`;
+    const docId = uuidv4();
+
+    // 创建文档记录
+    const { error: docError } = await supabase.from('documents').insert({
+      id: docId,
+      knowledge_base_id: baseId,
+      filename: `${docTitle}.txt`,
+      content_preview: docContent.slice(0, 200),
+      chunk_count: 1,
+      status: 'processing',
+    });
+    if (docError) throw docError;
+
+    // 异步向量化
+    (async () => {
+      try {
+        const chunks = splitTextIntoChunks(docContent, 500, 50);
+        const embeddingClient = new EmbeddingClient({
+          customHeaders: HeaderUtils.extractForwardHeaders(req.headers as Record<string, string>),
+        } as any);
+
+        for (let i = 0; i < chunks.length; i++) {
+          try {
+            const chunkId = uuidv4();
+            const embedding = await embeddingClient.embedText(chunks[i]);
+            if (embedding) {
+              await supabase.from('document_chunks').insert({
+                id: chunkId,
+                document_id: docId,
+                knowledge_base_id: baseId,
+                chunk_index: i,
+                content: chunks[i],
+                embedding: JSON.stringify(embedding),
+              });
+            }
+          } catch (chunkErr) {
+            console.error('Chunk embedding error:', chunkErr);
+          }
+        }
+
+        await supabase.from('documents').update({
+          chunk_count: chunks.length,
+          status: 'completed',
+        }).eq('id', docId);
+      } catch (err) {
+        console.error('Embedding error in save-to-knowledge:', err);
+        await supabase.from('documents').update({ status: 'error' }).eq('id', docId);
+      }
+    })();
+
+    res.json({
+      success: true,
+      knowledge_base_id: baseId,
+      document_id: docId,
+      message: 'Saving to knowledge base',
+    });
+  } catch (err: any) {
+    console.error('Save to knowledge error:', err?.message || err);
+    res.status(500).json({ error: 'Failed to save to knowledge base' });
   }
 });
 
