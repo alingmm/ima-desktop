@@ -63,6 +63,50 @@ pnpm start
 ```
 后端服务监听 `DEPLOY_RUN_PORT` 环境变量指定的端口，同时提供前端静态文件。
 
+### Electron 桌面应用
+
+#### 开发模式
+```bash
+pnpm electron:dev
+```
+同时启动前后端 + Electron 窗口，自动等待 Vite 就绪后加载。
+
+#### 编译 Electron TS
+```bash
+pnpm electron:compile
+```
+将 `electron/` 下的 TypeScript 编译到 `dist-electron/`。
+
+#### 打包桌面端
+```bash
+# Windows 安装包 (NSIS)
+pnpm electron:build:win
+
+# macOS (dmg + zip)
+pnpm electron:build:mac
+
+# Linux (AppImage + deb)
+pnpm electron:build:linux
+```
+输出目录：`release/{version}/`
+
+#### Electron 文件结构
+```
+electron/
+├── main.ts          # 主进程（窗口管理、IPC、对话框）
+└── preload.ts       # 预加载脚本（contextBridge 暴露安全 API）
+tsconfig.electron.json  # Electron TS 编译配置
+electron-builder.json   # 打包配置（NSIS 安装程序等）
+```
+
+#### 前端可用的 Electron API
+通过 `window.electronAPI` 访问：
+- `windowMinimize() / windowMaximize() / windowClose()` - 窗口控制
+- `isMaximized()` - 是否最大化
+- `openFile(options) / openDirectory(options) / saveFile(options)` - 文件对话框
+- `getVersion() / getName() / getPath(name)` - 应用信息
+- `isElectron() / platform()` - 运行环境检测
+
 ## 数据库表设计
 
 ### 核心表
