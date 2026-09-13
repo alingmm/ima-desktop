@@ -1,0 +1,14 @@
+{
+  "name": "ai-workstation",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install:all": "pnpm install && cd client && pnpm install && cd ../server && pnpm install",
+    "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,green\" \"pnpm --filter server dev\" \"pnpm --filter client dev\"",
+    "build:all": "cd client && pnpm build && cd ../server && pnpm build",
+    "start": "cd server && pnpm start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
