@@ -11,7 +11,6 @@
     "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,green\" \"pnpm --filter server dev\" \"pnpm --filter client dev\"",
     "build:all": "cd client && pnpm build && cd ../server && pnpm build",
     "start": "cd server && pnpm start",
-
     "electron:compile": "tsc -p tsconfig.electron.json",
     "electron:dev": "concurrently -k -n \"SERVER,CLIENT,ELECTRON\" -c \"blue,green,magenta\" \"pnpm --filter server dev\" \"pnpm --filter client dev\" \"wait-on http://localhost:5173 && tsc -p tsconfig.electron.json && electron .\"",
     "electron:build": "pnpm build:all && pnpm electron:compile && electron-builder -c electron-builder.json",
@@ -21,8 +20,8 @@
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
-    "electron": "^34.0.0",
-    "electron-builder": "^25.1.0",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
     "electron-is-dev": "^3.0.1",
     "wait-on": "^8.0.0"
   }

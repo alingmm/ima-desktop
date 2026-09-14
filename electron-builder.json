@@ -17,10 +17,17 @@
       {
         "target": "nsis",
         "arch": ["x64"]
+      },
+      {
+        "target": "zip",
+        "arch": ["x64"]
       }
     ],
-    "icon": "build/icon.ico",
-    "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
+    "artifactName": "IMA-WorkStation-Setup-${version}-${arch}.${ext}",
+    "executableName": "IMA-WorkStation",
+    "sign": null,
+    "signAndEditExecutable": false,
+    "signDlls": false
   },
   "nsis": {
     "oneClick": false,
@@ -28,9 +35,6 @@
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
     "shortcutName": "IMA工作台",
-    "installerIcon": "build/icon.ico",
-    "uninstallerIcon": "build/icon.ico",
-    "installerHeaderIcon": "build/icon.ico",
     "perMachine": false,
     "allowElevation": true
   },
