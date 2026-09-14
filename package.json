@@ -19,7 +19,7 @@
     "electron:build:linux": "pnpm build:all && pnpm electron:compile && electron-builder -c electron-builder.json --linux"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0",
+    "concurrently": "^9.2.4",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
     "electron-is-dev": "^3.0.1",
