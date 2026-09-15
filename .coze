@@ -2,9 +2,9 @@
 requires = ["nodejs-24"]
 
 [dev]
-build = ["pnpm", "run", "install:all"]
+build = ["sh", "-c", "ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm run install:all"]
 run = ["pnpm", "run", "dev"]
 
 [deploy]
-build = ["pnpm", "run", "build:all"]
+build = ["sh", "-c", "ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install --frozen-lockfile=false && pnpm run build:all"]
 run = ["pnpm", "run", "start"]

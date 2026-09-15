@@ -7,7 +7,7 @@
   "private": true,
   "main": "dist-electron/main.js",
   "scripts": {
-    "install:all": "pnpm install && cd client && pnpm install && cd ../server && pnpm install",
+    "install:all": "ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install && cd client && pnpm install && cd ../server && pnpm install",
     "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,green\" \"pnpm --filter server dev\" \"pnpm --filter client dev\"",
     "build:all": "cd client && pnpm build && cd ../server && pnpm build",
     "start": "cd server && pnpm start",

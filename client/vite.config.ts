@@ -12,7 +12,8 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: Number(process.env.DEPLOY_RUN_PORT) || 5173,
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'http://localhost:3001',
