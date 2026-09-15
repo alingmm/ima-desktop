@@ -87,6 +87,11 @@ logs/
 *.xlsx
 *.csv
 
+# Electron build outputs
+dist-electron/
+release/
+electron-builder-out/
+
 # Preview files
 .preview
 
