@@ -9,7 +9,7 @@
   "scripts": {
     "install:all": "ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install && cd client && pnpm install && cd ../server && pnpm install",
     "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,green\" \"pnpm --filter server dev\" \"pnpm --filter client dev\"",
-    "build:all": "cd client && pnpm build && cd ../server && pnpm build",
+    "build:all": "pnpm install --prefer-offline 2>/dev/null; cd client && pnpm install --prefer-offline 2>/dev/null && pnpm build && cd ../server && pnpm install --prefer-offline 2>/dev/null && pnpm build",
     "start": "cd server && pnpm start",
     "electron:compile": "tsc -p tsconfig.electron.json",
     "electron:dev": "concurrently -k -n \"SERVER,CLIENT,ELECTRON\" -c \"blue,green,magenta\" \"pnpm --filter server dev\" \"pnpm --filter client dev\" \"wait-on http://localhost:5173 && tsc -p tsconfig.electron.json && electron .\"",
