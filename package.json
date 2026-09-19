@@ -6,6 +6,17 @@
   "license": "MIT",
   "private": true,
   "main": "dist-electron/main.js",
+  "dependencies": {
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^10.0.0",
+    "pdf-parse": "^1.1.1",
+    "@supabase/supabase-js": "^2.45.0",
+    "coze-coding-dev-sdk": "^0.7.24",
+    "jsonwebtoken": "^9.0.2"
+  },
   "scripts": {
     "install:all": "ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install && cd client && pnpm install && cd ../server && pnpm install",
     "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,green\" \"pnpm --filter server dev\" \"pnpm --filter client dev\"",

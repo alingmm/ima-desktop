@@ -2,18 +2,15 @@ import { Router } from 'express';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { EmbeddingClient, LLMClient, Config, HeaderUtils } from 'coze-coding-dev-sdk';
-import { getSupabaseClient } from '../storage/database/supabase-client.js';
-import { authMiddleware, AuthRequest } from '../middleware/auth.js';
-import { splitTextIntoChunks } from '../utils/text.js';
+import { getSupabaseClient } from '../storage/database/supabase-client';
+import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { splitTextIntoChunks } from '../utils/text';
 
 const router: import("express").Router = Router();
 const config = new Config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const uploadDir = path.resolve(__dirname, '../../uploads');
 
 if (!fs.existsSync(uploadDir)) {

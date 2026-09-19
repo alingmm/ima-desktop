@@ -6,12 +6,19 @@
   },
   "files": [
     "dist-electron/**/*",
+    "server/dist/**/*",
     "client/dist/**/*",
     "package.json"
   ],
   "extraMetadata": {
     "main": "dist-electron/main.js"
   },
+  "asar": true,
+  "asarUnpack": [
+    "node_modules/**/*.node",
+    "node_modules/**/*better-sqlite3*",
+    "server/uploads/**/*"
+  ],
   "win": {
     "target": [
       {
