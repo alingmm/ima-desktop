@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, ChevronDown, Copy, ThumbsUp, ThumbsDown, RefreshCw, Database, Plus, X, Check } from 'lucide-react';
-import { chatApi, knowledgeApi } from '../api';
-import type { Message, Model, KnowledgeBase } from '../types';
+import { Send, ChevronDown, Copy, ThumbsUp, ThumbsDown, RefreshCw, Database, Plus, X, Check, Cpu } from 'lucide-react';
+import { chatApi, knowledgeApi, localModelApi } from '../api';
+import type { Message, Model, KnowledgeBase, OllamaModel } from '../types';
 import ReactMarkdown from 'react-markdown';
+import { useLocalSettings } from '../hooks/useLocalSettings';
 
 function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -21,6 +22,8 @@ function ChatPage() {
   const [showNewBaseInput, setShowNewBaseInput] = useState(false);
   const [selectedBaseId, setSelectedBaseId] = useState<string | null>(null);
   const [savingToKnowledge, setSavingToKnowledge] = useState(false);
+  const [localModels, setLocalModels] = useState<OllamaModel[]>([]);
+  const { settings } = useLocalSettings();
 
   // Load models on mount
   useEffect(() => {
@@ -29,17 +32,28 @@ function ChatPage() {
         const res = await chatApi.getModels();
         setModels(res.models);
       } catch (error) {
-        console.error('Failed to load models:', error);
-        // Fallback models
-        setModels([
-          { id: 'doubao-seed-2-0-pro-260215', name: '豆包 Pro', provider: 'doubao' },
-          { id: 'doubao-seed-2-0-lite-260215', name: '豆包 Lite', provider: 'doubao' },
-          { id: 'minimax-m2-7-260318', name: 'MiniMax', provider: 'minimax' },
-        ]);
+        console.error('Failed to load cloud models:', error);
+      }
+
+      // Load local Ollama models
+      try {
+        if (settings.ollamaUrl) {
+          const health = await localModelApi.checkHealth(settings.ollamaUrl);
+          if (health.available) {
+            const localRes = await localModelApi.getModels(settings.ollamaUrl);
+            setLocalModels(localRes);
+            // If default use local model and there are models available
+            if (settings.useLocalModel && localRes.length > 0) {
+              setCurrentModel(localRes[0].name);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load local models:', error);
       }
     };
     loadModels();
-  }, []);
+  }, [settings.ollamaUrl, settings.useLocalModel]);
 
   // Listen for conversation selection from sidebar
   useEffect(() => {
@@ -139,6 +153,10 @@ function ChatPage() {
     }
   };
 
+  const isLocalModel = (modelId: string) => {
+    return localModels.some((m) => m.name === modelId);
+  };
+
   const handleSend = async () => {
     if (!input.trim() || isStreaming) return;
 
@@ -152,10 +170,12 @@ function ChatPage() {
     const assistantMessage: Message = { role: 'assistant', content: '' };
     setMessages([...updatedMessages, assistantMessage]);
 
+    const localMode = isLocalModel(currentModel);
+
     try {
-      // If no conversation exists, create one first
+      // For cloud models, create conversation first (local mode may not use DB)
       let convId = currentConversationId;
-      if (!convId) {
+      if (!convId && !localMode) {
         const convRes = await chatApi.createConversation(input.trim().slice(0, 30), currentModel);
         convId = convRes.conversation.id;
         setCurrentConversationId(convId);
@@ -164,54 +184,89 @@ function ChatPage() {
         window.dispatchEvent(event);
       }
 
-      // Use streaming
-      const controller = new AbortController();
-      const response = await fetch('/api/chat/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: updatedMessages,
+      if (localMode) {
+        // Local model streaming via event source
+        localModelApi.streamChat({
           model: currentModel,
-          conversation_id: convId,
-        }),
-        signal: controller.signal,
-      });
+          messages: updatedMessages,
+          ollamaUrl: settings.ollamaUrl,
+          onMessage: (text: string) => {
+            setMessages((prev) => {
+              const newMessages = [...prev];
+              const lastIdx = newMessages.length - 1;
+              newMessages[lastIdx] = {
+                role: 'assistant',
+                content: (newMessages[lastIdx]?.content || '') + text,
+              };
+              return newMessages;
+            });
+          },
+          onDone: () => {
+            setIsStreaming(false);
+          },
+          onError: (error: string) => {
+            console.error('Local model error:', error);
+            setMessages((prev) => {
+              const newMessages = [...prev];
+              newMessages[newMessages.length - 1] = {
+                role: 'assistant',
+                content: `本地模型调用失败：${error}`,
+              };
+              return newMessages;
+            });
+            setIsStreaming(false);
+          },
+        });
+      } else {
+        // Cloud model streaming
+        const controller = new AbortController();
+        const response = await fetch('/api/chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: updatedMessages,
+            model: currentModel,
+            conversation_id: convId,
+          }),
+          signal: controller.signal,
+        });
 
-      if (!response.ok) {
-        throw new Error('Stream failed');
-      }
+        if (!response.ok) {
+          throw new Error('Stream failed');
+        }
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let fullText = '';
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let fullText = '';
 
-      if (reader) {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
+        if (reader) {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
 
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n');
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
 
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.done) {
-                  // Stream finished
-                } else if (data.content) {
-                  fullText += data.content;
-                  setMessages((prev) => {
-                    const newMessages = [...prev];
-                    newMessages[newMessages.length - 1] = {
-                      role: 'assistant',
-                      content: fullText,
-                    };
-                    return newMessages;
-                  });
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  if (data.done) {
+                    // Stream finished
+                  } else if (data.content) {
+                    fullText += data.content;
+                    setMessages((prev) => {
+                      const newMessages = [...prev];
+                      newMessages[newMessages.length - 1] = {
+                        role: 'assistant',
+                        content: fullText,
+                      };
+                      return newMessages;
+                    });
+                  }
+                } catch (e) {
+                  // ignore parse errors
                 }
-              } catch (e) {
-                // ignore parse errors
               }
             }
           }
@@ -228,7 +283,7 @@ function ChatPage() {
         return newMessages;
       });
     } finally {
-      setIsStreaming(false);
+      if (!localMode) setIsStreaming(false);
     }
   };
 
@@ -240,9 +295,14 @@ function ChatPage() {
   };
 
   const getModelDisplayName = (modelId: string) => {
-    const model = models.find((m) => m.id === modelId);
-    return model?.name || modelId;
+    const cloudModel = models.find((m) => m.id === modelId);
+    if (cloudModel) return cloudModel.name;
+    const localModel = localModels.find((m) => m.name === modelId);
+    if (localModel) return localModel.name;
+    return modelId;
   };
+
+  const isCurrentModelLocal = isLocalModel(currentModel);
 
   return (
     <div className="h-full flex flex-col">
@@ -260,15 +320,15 @@ function ChatPage() {
             onClick={() => setShowModelDropdown(!showModelDropdown)}
             className="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-lg hover:border-[var(--color-primary)] transition-colors text-sm text-[var(--color-text-primary)]"
           >
-            <span className="w-2 h-2 rounded-full bg-green-500"></span>
+            <span className={`w-2 h-2 rounded-full ${isCurrentModelLocal ? 'bg-emerald-500' : 'bg-blue-500'}`}></span>
             {getModelDisplayName(currentModel)}
             <ChevronDown size={16} className="text-[var(--color-text-muted)]" />
           </button>
 
           {showModelDropdown && (
-            <div className="absolute right-0 top-full mt-2 w-56 bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-lg shadow-xl z-50 overflow-hidden animate-fade-in">
-              <div className="p-2">
-                <p className="text-xs text-[var(--color-text-muted)] px-2 py-1">选择模型</p>
+            <div className="absolute right-0 top-full mt-2 w-56 bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-lg shadow-xl z-50 overflow-hidden animate-fade-in max-h-80 overflow-y-auto">
+              <div className="p-2 space-y-1">
+                <p className="text-xs text-[var(--color-text-muted)] px-2 py-1 font-medium">云端模型</p>
                 {models.map((model) => (
                   <button
                     key={model.id}
@@ -295,6 +355,35 @@ function ChatPage() {
                   </button>
                 ))}
               </div>
+              {localModels.length > 0 && (
+                <div className="p-2 border-t border-[var(--color-border)] space-y-1">
+                  <p className="text-xs text-emerald-400 px-2 py-1 font-medium flex items-center gap-1">
+                    <Cpu className="w-3 h-3" /> 本地模型
+                  </p>
+                  {localModels.map((model) => (
+                    <button
+                      key={`local-${model.id}`}
+                      onClick={() => {
+                        setCurrentModel(model.name);
+                        setShowModelDropdown(false);
+                      }}
+                      className={`w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm text-left transition-colors ${
+                        currentModel === model.name
+                          ? 'bg-emerald-500/10 text-emerald-400'
+                          : 'text-[var(--color-text-primary)] hover:bg-[var(--color-sidebar-hover)]'
+                      }`}
+                    >
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                      <span className="truncate">{model.name}</span>
+                      {model.details?.parameter_size && (
+                        <span className="text-xs text-[var(--color-text-muted)] ml-auto">
+                          {model.details.parameter_size}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

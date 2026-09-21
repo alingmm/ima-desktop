@@ -261,6 +261,75 @@ export const notesApi = {
     }),
 };
 
+// Local model (Ollama) APIs
+export const localModelApi = {
+  checkHealth: (ollamaUrl?: string) => {
+    const headers: Record<string, string> = {};
+    if (ollamaUrl) headers['x-ollama-url'] = ollamaUrl;
+    return request<{ available: boolean; url: string; error?: string; hint?: string }>('/local-model/health', { headers });
+  },
+
+  getModels: (ollamaUrl?: string) => {
+    const headers: Record<string, string> = {};
+    if (ollamaUrl) headers['x-ollama-url'] = ollamaUrl;
+    return request<{ models: import('../types').OllamaModel[] }>('/local-model/models', { headers }).then((r) => r.models);
+  },
+
+  pullModel: (name: string, ollamaUrl?: string) => {
+    const headers: Record<string, string> = {};
+    if (ollamaUrl) headers['x-ollama-url'] = ollamaUrl;
+    return request<{ status: string; model: string }>('/local-model/pull', { method: 'POST', body: JSON.stringify({ name }), headers });
+  },
+
+  streamChat: (options: {
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+    system_prompt?: string;
+    ollamaUrl?: string;
+    onMessage?: (text: string) => void;
+    onDone?: () => void;
+    onError?: (error: string) => void;
+  }) => {
+    const { model, messages, system_prompt, ollamaUrl, onMessage, onDone, onError } = options;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (ollamaUrl) headers['x-ollama-url'] = ollamaUrl;
+    const eventSource = new EventSourcePolyfill('/api/local-model/stream', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model, messages, system_prompt }),
+    });
+
+    eventSource.onmessage = (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.error) {
+          onError?.(data.error);
+          eventSource.close();
+          return;
+        }
+        if (data.content) {
+          onMessage?.(data.content);
+        }
+        if (data.done) {
+          onDone?.();
+          eventSource.close();
+        }
+      } catch {
+        // ignore parse errors
+      }
+    };
+
+    eventSource.onerror = () => {
+      onError?.('连接本地模型失败');
+      eventSource.close();
+    };
+
+    return eventSource;
+  },
+};
+
 // Polyfill for EventSource with POST support
 class EventSourcePolyfill {
   private url: string;

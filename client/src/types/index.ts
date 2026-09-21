@@ -26,6 +26,25 @@ export interface Model {
   provider: string;
 }
 
+export interface OllamaModel {
+  id: string;
+  name: string;
+  provider: 'ollama';
+  size?: number;
+  digest?: string;
+  modified_at?: string;
+  details?: {
+    family?: string;
+    parameter_size?: string;
+    quantization_level?: string;
+  };
+}
+
+export interface AISettings {
+  defaultModel: string;
+  ollamaUrl: string;
+}
+
 export interface KnowledgeBase {
   id: string;
   name: string;

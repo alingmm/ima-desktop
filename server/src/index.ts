@@ -11,6 +11,7 @@ import searchRoutes from './routes/search';
 import authRoutes from './routes/auth';
 import userRoutes from './routes/user';
 import notesRoutes from './routes/notes';
+import localModelRoutes from './routes/local-model';
 
 export function createApp(clientDistDir?: string): express.Express {
   const app = express();
@@ -31,6 +32,7 @@ export function createApp(clientDistDir?: string): express.Express {
   app.use('/api/search', searchRoutes);
   app.use('/api/user', userRoutes);
   app.use('/api/notes', notesRoutes);
+  app.use('/api/local-model', localModelRoutes);
 
   // Serve static files in production
   const clientDistPath = clientDistDir || path.resolve(__dirname, '../../client/dist');
