@@ -176,6 +176,12 @@ electron-builder.json   # 打包配置（NSIS 安装程序等）
 - POST `/browse` - URL 网页内容解析提取
 - GET `/history` - 搜索历史
 
+### 本地大模型 `/api/local-model`
+- GET `/health` - 检测 Ollama 服务是否可用（传 `x-ollama-url` header 指定地址）
+- GET `/models` - 获取本地已安装模型列表
+- POST `/pull` - 下载新模型（ollama pull）
+- POST `/stream` - 本地模型流式对话 (SSE，与云端格式一致)
+
 ### 笔记 `/api/notes`
 - GET `/` - 获取笔记列表（支持搜索、标签过滤）
 - GET `/tags` - 获取所有标签
