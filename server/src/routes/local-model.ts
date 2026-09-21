@@ -22,7 +22,7 @@ router.get('/health', authMiddleware, async (req: AuthRequest, res) => {
     });
 
     if (!response.ok) {
-      res.status(502).json({ available: false, error: `Ollama returned ${response.status}`, url: ollamaUrl });
+      res.json({ available: false, error: `Ollama returned ${response.status}`, url: ollamaUrl });
       return;
     }
 
@@ -33,7 +33,7 @@ router.get('/health', authMiddleware, async (req: AuthRequest, res) => {
       modelCount: data.models?.length || 0,
     });
   } catch (error: any) {
-    res.status(502).json({
+    res.json({
       available: false,
       error: error.message || 'Failed to connect to Ollama',
       url: ollamaUrl,

@@ -1,200 +1,189 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { getSupabaseClient } from '../storage/database/supabase-client.js';
-import { authMiddleware, AuthRequest } from '../middleware/auth.js';
+import { authMiddleware, AuthRequest } from '../middleware/auth';
+import {
+  selectWhere, insertOne, findById, updateById, deleteWhere, orderBy,
+  NoteRecord,
+} from '../storage/json-storage';
 
-const router: import("express").Router = Router();
-router.use(authMiddleware);
+const router: import('express').Router = Router();
 
 // 获取笔记列表（支持搜索和标签过滤）
-router.get('/', async (req: AuthRequest, res) => {
+router.get('/', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const user_id = req.userId;
     const { search, tag, sort_by = 'updated_at', order = 'desc' } = req.query;
-    const supabase = getSupabaseClient();
+    let notes = selectWhere('notes', { user_id: req.userId } as Partial<NoteRecord>);
 
-    let query = supabase.from('notes').select('*').eq('user_id', user_id);
-
-    if (search) {
-      query = query.or(`title.ilike.%${search}%,content.ilike.%${search}%`);
+    // 搜索过滤
+    if (search && typeof search === 'string') {
+      const searchLower = search.toLowerCase();
+      notes = notes.filter(
+        (note) =>
+          note.title?.toLowerCase().includes(searchLower) ||
+          note.content?.toLowerCase().includes(searchLower)
+      );
     }
 
-    if (tag) {
-      query = query.contains('tags', [tag]);
+    // 标签过滤
+    if (tag && typeof tag === 'string') {
+      notes = notes.filter(
+        (note) => note.tags && Array.isArray(note.tags) && note.tags.includes(tag)
+      );
     }
 
-    const { data, error } = await query
-      .order(sort_by as string, { ascending: order === 'asc' })
-      .order('is_pinned', { ascending: false });
+    // 排序
+    const sortField = sort_by === 'created_at' ? 'created_at' : 'updated_at';
+    const sortOrder = order === 'asc' ? 'asc' : 'desc';
+    notes = orderBy(notes, sortField, sortOrder);
 
-    if (error) throw error;
-
-    res.json({ notes: data || [] });
-  } catch (err) {
+    res.json({ notes });
+  } catch (err: any) {
     console.error('Get notes error:', err);
-    res.status(500).json({ error: 'Failed to get notes' });
+    res.status(500).json({ error: 'Failed to get notes', message: err.message });
   }
 });
 
 // 获取所有标签
-router.get('/tags', async (req: AuthRequest, res) => {
+router.get('/tags', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const user_id = req.userId;
-    const supabase = getSupabaseClient();
-
-    const { data, error } = await supabase
-      .from('notes')
-      .select('tags')
-      .eq('user_id', user_id);
-
-    if (error) throw error;
-
+    const notes = selectWhere('notes', { user_id: req.userId } as Partial<NoteRecord>);
     const tagSet = new Set<string>();
-    (data || []).forEach((note: any) => {
-      (note.tags || []).forEach((tag: string) => tagSet.add(tag));
+    notes.forEach((note) => {
+      if (note.tags && Array.isArray(note.tags)) {
+        note.tags.forEach((tag: string) => tagSet.add(tag));
+      }
     });
 
     res.json({ tags: Array.from(tagSet).sort() });
-  } catch (err) {
+  } catch (err: any) {
     console.error('Get tags error:', err);
-    res.status(500).json({ error: 'Failed to get tags' });
+    res.status(500).json({ error: 'Failed to get tags', message: err.message });
   }
 });
 
 // 获取单条笔记
-router.get('/:id', async (req: AuthRequest, res) => {
+router.get('/:id', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const user_id = req.userId;
     const { id } = req.params;
-    const supabase = getSupabaseClient();
+    const note = findById('notes', id);
 
-    const { data, error } = await supabase
-      .from('notes')
-      .select('*')
-      .eq('id', id)
-      .eq('user_id', user_id)
-      .single();
-
-    if (error) throw error;
-    if (!data) {
+    if (!note) {
       res.status(404).json({ error: 'Note not found' });
       return;
     }
 
-    res.json({ note: data });
-  } catch (err) {
+    if (note.user_id !== req.userId) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    res.json({ note });
+  } catch (err: any) {
     console.error('Get note error:', err);
-    res.status(500).json({ error: 'Failed to get note' });
+    res.status(500).json({ error: 'Failed to get note', message: err.message });
   }
 });
 
 // 创建笔记
-router.post('/', async (req: AuthRequest, res) => {
+router.post('/', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const user_id = req.userId;
     const { title, content, tags, is_pinned } = req.body;
-    const supabase = getSupabaseClient();
+    const now = new Date().toISOString();
 
-    const id = uuidv4();
-    const { data, error } = await supabase
-      .from('notes')
-      .insert({
-        id,
-        user_id,
-        title: title || '无标题笔记',
-        content: content || '',
-        tags: tags || [],
-        is_pinned: is_pinned || false,
-      })
-      .select()
-      .single();
+    const note = insertOne('notes', {
+      id: uuidv4(),
+      user_id: req.userId!,
+      title: title || '无标题笔记',
+      content: content || '',
+      tags: tags || [],
+      is_pinned: is_pinned || false,
+      created_at: now,
+      updated_at: now,
+    } as NoteRecord);
 
-    if (error) throw error;
-
-    res.status(201).json({ note: data });
-  } catch (err) {
+    res.status(201).json({ note });
+  } catch (err: any) {
     console.error('Create note error:', err);
-    res.status(500).json({ error: 'Failed to create note' });
+    res.status(500).json({ error: 'Failed to create note', message: err.message });
   }
 });
 
 // 更新笔记
-router.put('/:id', async (req: AuthRequest, res) => {
+router.put('/:id', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const user_id = req.userId;
     const { id } = req.params;
     const { title, content, tags, is_pinned } = req.body;
-    const supabase = getSupabaseClient();
 
-    const updateData: any = { updated_at: new Date().toISOString() };
+    const existing = findById('notes', id);
+    if (!existing) {
+      res.status(404).json({ error: 'Note not found' });
+      return;
+    }
+    if (existing.user_id !== req.userId) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    const updateData: Partial<NoteRecord> = { updated_at: new Date().toISOString() };
     if (title !== undefined) updateData.title = title;
     if (content !== undefined) updateData.content = content;
     if (tags !== undefined) updateData.tags = tags;
     if (is_pinned !== undefined) updateData.is_pinned = is_pinned;
 
-    const { data, error } = await supabase
-      .from('notes')
-      .update(updateData)
-      .eq('id', id)
-      .eq('user_id', user_id)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    res.json({ note: data });
-  } catch (err) {
+    const updated = updateById('notes', id, updateData);
+    res.json({ note: updated });
+  } catch (err: any) {
     console.error('Update note error:', err);
-    res.status(500).json({ error: 'Failed to update note' });
+    res.status(500).json({ error: 'Failed to update note', message: err.message });
   }
 });
 
 // 删除笔记
-router.delete('/:id', async (req: AuthRequest, res) => {
+router.delete('/:id', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const user_id = req.userId;
     const { id } = req.params;
-    const supabase = getSupabaseClient();
 
-    const { error } = await supabase
-      .from('notes')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', user_id);
-
-    if (error) throw error;
-
-    res.json({ success: true });
-  } catch (err) {
-    console.error('Delete note error:', err);
-    res.status(500).json({ error: 'Failed to delete note' });
-  }
-});
-
-// 批量删除
-router.post('/batch-delete', async (req: AuthRequest, res) => {
-  try {
-    const user_id = req.userId;
-    const { ids } = req.body;
-    const supabase = getSupabaseClient();
-
-    if (!ids || !Array.isArray(ids) || ids.length === 0) {
-      res.status(400).json({ error: 'No ids provided' });
+    const existing = findById('notes', id);
+    if (!existing) {
+      res.status(404).json({ error: 'Note not found' });
+      return;
+    }
+    if (existing.user_id !== req.userId) {
+      res.status(403).json({ error: 'Access denied' });
       return;
     }
 
-    const { error } = await supabase
-      .from('notes')
-      .delete()
-      .in('id', ids)
-      .eq('user_id', user_id);
+    deleteWhere('notes', { id });
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('Delete note error:', err);
+    res.status(500).json({ error: 'Failed to delete note', message: err.message });
+  }
+});
 
-    if (error) throw error;
+// 批量删除笔记
+router.post('/batch-delete', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { ids } = req.body;
 
-    res.json({ success: true, deleted_count: ids.length });
-  } catch (err) {
-    console.error('Batch delete notes error:', err);
-    res.status(500).json({ error: 'Failed to delete notes' });
+    if (!Array.isArray(ids)) {
+      res.status(400).json({ error: 'ids must be an array' });
+      return;
+    }
+
+    let deletedCount = 0;
+    for (const id of ids) {
+      const existing = findById('notes', id);
+      if (existing && existing.user_id === req.userId) {
+        deleteWhere('notes', { id });
+        deletedCount++;
+      }
+    }
+
+    res.json({ success: true, deleted_count: deletedCount });
+  } catch (err: any) {
+    console.error('Batch delete error:', err);
+    res.status(500).json({ error: 'Failed to batch delete notes', message: err.message });
   }
 });
 

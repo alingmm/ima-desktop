@@ -8,8 +8,8 @@ AI 工作台应用，界面风格类似腾讯ima。深色主题，现代简洁�
 ### 技术栈
 - **前端**: React 18 + TypeScript + Vite + TailwindCSS v4 + Lucide Icons
 - **后端**: Express.js + TypeScript
-- **数据库**: Supabase (PostgreSQL + pgvector)
-- **AI 服务**: coze-coding-dev-sdk (LLM/Embedding/Video/Search)
+- **数据库**: 本地 JSON 文件存储（用户数据目录下），支持向量余弦相似度检索
+- **AI 服务**: OpenAI 兼容接口（对话+Embedding）+ Tavily 搜索 + 本地 Ollama 模型
 
 ### 项目结构
 ```
@@ -107,7 +107,15 @@ electron-builder.json   # 打包配置（NSIS 安装程序等）
 - `getVersion() / getName() / getPath(name)` - 应用信息
 - `isElectron() / platform()` - 运行环境检测
 
-## 数据库表设计
+## 数据存储
+
+使用本地 JSON 文件存储，数据文件存放在用户数据目录下的 `data/` 目录。
+
+### 用户数据目录
+- 优先级：环境变量 `IMA_USER_DATA_DIR` > `os.homedir()/.ima-workstation`
+- `config.json` — 应用配置（API Key、模型设置等）
+- `data/*.json` — 各实体数据表
+- `uploads/` — 上传文件
 
 ### 核心表
 | 表名 | 说明 |
@@ -118,7 +126,7 @@ electron-builder.json   # 打包配置（NSIS 安装程序等）
 | messages | 对话消息 |
 | knowledge_bases | 知识库 |
 | documents | 文档 |
-| document_chunks | 文档片段 (含 pgvector 向量) |
+| document_chunks | 文档片段 (含向量数组) |
 | knowledge_shares | 知识库分享链接 |
 | knowledge_collaborators | 知识库协作者 |
 | video_tasks | 视频生成任务 |
@@ -126,7 +134,12 @@ electron-builder.json   # 打包配置（NSIS 安装程序等）
 | notes | 笔记 |
 
 ### 向量检索
-使用 pgvector 扩展，通过 `match_document_chunks` 函数进行语义搜索。
+使用内存余弦相似度实现（`cosineSimilarity` 函数），无需外部向量库。
+
+### 配置管理
+- `GET /api/settings` — 读取配置（API Key 脱敏返回）
+- `POST /api/settings` — 写入配置
+- 配置字段：`openaiBaseUrl`, `openaiApiKey`, `chatModel`, `embeddingModel`, `searchApiKey`, `searchProvider`
 
 ## API 接口清单
 

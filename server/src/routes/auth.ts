@@ -1,12 +1,10 @@
 import { Router } from 'express';
-import { getSupabaseClient } from '../storage/database/supabase-client.js';
 import { v4 as uuidv4 } from 'uuid';
+import { findOne, insertOne, UserRecord } from '../storage/json-storage';
 
-const router: import("express").Router = Router();
+const router: import('express').Router = Router();
 
-// Simple auth endpoints for demo
-// In production, use Supabase Auth, Auth0, etc.
-
+// Login — simple local authentication (no password hash for local app)
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -16,53 +14,30 @@ router.post('/login', async (req, res) => {
       return;
     }
 
-    const supabase = getSupabaseClient();
+    const user = findOne('users', { email } as Partial<UserRecord>);
 
-    // Demo: find or create user (password not verified for demo purposes)
-    let { data: user, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', email)
-      .single();
-
-    if (error || !user) {
-      // Create demo user
-      const userId = uuidv4();
-      const { data: newUser, error: createError } = await supabase
-        .from('users')
-        .insert({
-          id: userId,
-          email,
-          name: email.split('@')[0],
-        })
-        .select()
-        .single();
-
-      if (createError) {
-        res.status(500).json({ error: 'Login failed' });
-        return;
-      }
-      user = newUser;
+    if (!user) {
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
     }
 
-    // Generate simple token (demo only)
-    const token = Buffer.from(`${user.id}:${Date.now()}`).toString('base64');
+    // Simple password comparison (local app, acceptable)
+    if (user.password !== password) {
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
+    }
 
+    const { password: _pw, ...userWithoutPassword } = user;
     res.json({
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        avatar_url: user.avatar_url,
-      },
-      token,
+      user: userWithoutPassword,
+      token: `local-token-${user.id}`,
     });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Login failed' });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Login failed', message: error.message });
   }
 });
 
+// Register — simple local user creation
 router.post('/register', async (req, res) => {
   try {
     const { email, password, name } = req.body;
@@ -72,44 +47,32 @@ router.post('/register', async (req, res) => {
       return;
     }
 
-    const supabase = getSupabaseClient();
-    const userId = uuidv4();
-
-    const { data: user, error } = await supabase
-      .from('users')
-      .insert({
-        id: userId,
-        email,
-        name: name || email.split('@')[0],
-      })
-      .select()
-      .single();
-
-    if (error) {
-      res.status(400).json({ error: 'Registration failed, email may already exist' });
+    // Check if user exists
+    const existing = findOne('users', { email } as Partial<UserRecord>);
+    if (existing) {
+      res.status(409).json({ error: 'User already exists' });
       return;
     }
 
-    const token = Buffer.from(`${user.id}:${Date.now()}`).toString('base64');
+    const now = new Date().toISOString();
+    const user = insertOne('users', {
+      id: uuidv4(),
+      email,
+      password,
+      name: name || email.split('@')[0],
+      avatar_url: '',
+      created_at: now,
+      updated_at: now,
+    } as UserRecord);
 
-    res.json({
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        avatar_url: user.avatar_url,
-      },
-      token,
+    const { password: _pw, ...userWithoutPassword } = user;
+    res.status(201).json({
+      user: userWithoutPassword,
+      token: `local-token-${user.id}`,
     });
-  } catch (error) {
-    console.error('Register error:', error);
-    res.status(500).json({ error: 'Registration failed' });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Registration failed', message: error.message });
   }
-});
-
-router.post('/logout', (_req, res) => {
-  // In a real app, invalidate the token
-  res.json({ success: true });
 });
 
 export default router;

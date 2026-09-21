@@ -1,46 +1,44 @@
 import { Router } from 'express';
-import { LLMClient, Config, HeaderUtils, EmbeddingClient } from 'coze-coding-dev-sdk';
-import { getSupabaseClient } from '../storage/database/supabase-client.js';
-import { authMiddleware, AuthRequest } from '../middleware/auth.js';
+import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { v4 as uuidv4 } from 'uuid';
-import { splitTextIntoChunks } from '../utils/text.js';
+import {
+  selectWhere, insertOne, updateOne, deleteWhere, orderBy,
+  ConversationRecord, MessageRecord, KnowledgeBaseRecord, DocumentRecord,
+  DocumentChunkRecord, selectOne,
+} from '../storage/json-storage';
+import { chatCompletion, streamChatCompletion, createEmbedding, cosineSimilarity, API_ERRORS } from '../services/ai';
+import { loadConfig } from '../config';
+import { splitTextIntoChunks } from '../utils/text';
 
-const router: import("express").Router = Router();
-const config = new Config();
-
-export const AVAILABLE_MODELS = [
-  { id: 'doubao-seed-2-0-pro-260215', name: '豆包 Pro', provider: 'doubao' },
-  { id: 'doubao-seed-2-0-lite-260215', name: '豆包 Lite', provider: 'doubao' },
-  { id: 'doubao-seed-2-0-mini-260215', name: '豆包 Mini', provider: 'doubao' },
-  { id: 'minimax-m2-7-260318', name: 'MiniMax M2.7', provider: 'minimax' },
-  { id: 'qwen-3-5-plus-260215', name: '通义千问 Qwen3.5', provider: 'qwen' },
-  { id: 'glm-5-0-260211', name: '智谱 GLM-5', provider: 'glm' },
-];
+const router: import('express').Router = Router();
 
 interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
 }
 
-// Get available models
+function apiError(res: any, status: number, code: string, message: string) {
+  res.status(status).json({ error: code, message });
+}
+
+// Get available models (from config)
 router.get('/models', (_req, res) => {
-  res.json({ models: AVAILABLE_MODELS });
+  const config = loadConfig();
+  const modelId = config.chatModel || 'gpt-4o-mini';
+  const models = [
+    { id: modelId, name: modelId, provider: 'openai-compatible' },
+  ];
+  res.json({ models });
 });
 
 // Get conversation list
 router.get('/conversations', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const supabase = getSupabaseClient();
-    const { data, error } = await supabase
-      .from('conversations')
-      .select('id, title, model, created_at, updated_at')
-      .eq('user_id', req.userId)
-      .order('updated_at', { ascending: false });
-
-    if (error) throw error;
-    res.json({ conversations: data || [] });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get conversations' });
+    const convs = selectWhere('conversations', { user_id: req.userId } as Partial<ConversationRecord>);
+    const sorted = orderBy(convs, 'updated_at', 'desc');
+    res.json({ conversations: sorted });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to get conversations', message: error.message });
   }
 });
 
@@ -48,24 +46,19 @@ router.get('/conversations', authMiddleware, async (req: AuthRequest, res) => {
 router.post('/conversations', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const { title, model } = req.body;
-    const supabase = getSupabaseClient();
     const id = uuidv4();
-
-    const { data, error } = await supabase
-      .from('conversations')
-      .insert({
-        id,
-        user_id: req.userId,
-        title: title || '新对话',
-        model: model || 'doubao-seed-2-0-pro-260215',
-      })
-      .select()
-      .single();
-
-    if (error) throw error;
-    res.json({ conversation: data });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to create conversation' });
+    const now = new Date().toISOString();
+    const conv = insertOne('conversations', {
+      id,
+      user_id: req.userId!,
+      title: title || '新对话',
+      model: model || 'doubao-seed-2-0-pro-260215',
+      created_at: now,
+      updated_at: now,
+    } as ConversationRecord);
+    res.json({ conversation: conv });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to create conversation', message: error.message });
   }
 });
 
@@ -73,18 +66,11 @@ router.post('/conversations', authMiddleware, async (req: AuthRequest, res) => {
 router.get('/conversations/:id/messages', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const { id } = req.params;
-    const supabase = getSupabaseClient();
-
-    const { data, error } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('conversation_id', id)
-      .order('created_at', { ascending: true });
-
-    if (error) throw error;
-    res.json({ messages: data || [] });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get messages' });
+    const msgs = selectWhere('messages', { conversation_id: id } as Partial<MessageRecord>);
+    const sorted = orderBy(msgs, 'created_at', 'asc');
+    res.json({ messages: sorted });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to get messages', message: error.message });
   }
 });
 
@@ -92,18 +78,17 @@ router.get('/conversations/:id/messages', authMiddleware, async (req: AuthReques
 router.delete('/conversations/:id', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const { id } = req.params;
-    const supabase = getSupabaseClient();
-
-    const { error } = await supabase
-      .from('conversations')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', req.userId);
-
-    if (error) throw error;
+    // 删除关联消息
+    deleteWhere('messages', { conversation_id: id } as Partial<MessageRecord>);
+    // 删除会话
+    const count = deleteWhere('conversations', { id, user_id: req.userId } as Partial<ConversationRecord>);
+    if (count === 0) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete conversation' });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to delete conversation', message: error.message });
   }
 });
 
@@ -112,101 +97,90 @@ router.patch('/conversations/:id', authMiddleware, async (req: AuthRequest, res)
   try {
     const { id } = req.params;
     const { title, model } = req.body;
-    const supabase = getSupabaseClient();
 
-    const updates: Record<string, unknown> = {};
+    const updates: Partial<ConversationRecord> = {};
     if (title !== undefined) updates.title = title;
     if (model !== undefined) updates.model = model;
 
-    const { data, error } = await supabase
-      .from('conversations')
-      .update(updates)
-      .eq('id', id)
-      .eq('user_id', req.userId)
-      .select()
-      .single();
-
-    if (error) throw error;
-    res.json({ conversation: data });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update conversation' });
+    const updated = updateOne('conversations', { id, user_id: req.userId } as Partial<ConversationRecord>, updates);
+    if (!updated) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+    res.json({ conversation: updated });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to update conversation', message: error.message });
   }
 });
 
 // Streaming chat
 router.post('/stream', authMiddleware, async (req: AuthRequest, res) => {
-  try {
-    const { messages, model, conversation_id, system_prompt } = req.body;
+  const { messages, model, conversation_id, system_prompt } = req.body;
 
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      res.status(400).json({ error: 'Messages array is required' });
-      return;
-    }
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    res.status(400).json({ error: 'Messages array is required' });
+    return;
+  }
 
-    const customHeaders = HeaderUtils.extractForwardHeaders(req.headers as Record<string, string>);
-    const client = new LLMClient(config, customHeaders);
+  const formattedMessages: Message[] = [];
+  if (system_prompt) {
+    formattedMessages.push({ role: 'system', content: system_prompt });
+  }
+  formattedMessages.push(...messages);
 
-    const formattedMessages: Message[] = [];
-    if (system_prompt) {
-      formattedMessages.push({ role: 'system', content: system_prompt });
-    }
-    formattedMessages.push(...messages);
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
 
-    // Set SSE headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
+  let fullResponse = '';
 
-    let fullResponse = '';
-
-    try {
-      const stream = client.stream(formattedMessages, {
-        model: model || 'doubao-seed-2-0-pro-260215',
-        temperature: 0.7,
-      });
-
-      for await (const chunk of stream) {
-          const text = chunk.content?.toString() || '';
-          if (text) {
-            fullResponse += text;
-            res.write(`data: ${JSON.stringify({ content: text })}\n\n`);
+  streamChatCompletion(
+    formattedMessages,
+    {
+      onContent: (text: string) => {
+        fullResponse += text;
+        res.write(`data: ${JSON.stringify({ content: text })}\n\n`);
+      },
+      onDone: async (content: string) => {
+        // 保存消息
+        if (conversation_id && content) {
+          try {
+            const lastUserMsg = messages.filter((m: Message) => m.role === 'user').pop();
+            if (lastUserMsg) {
+              insertOne('messages', {
+                id: uuidv4(),
+                conversation_id,
+                role: 'user',
+                content: lastUserMsg.content,
+                created_at: new Date().toISOString(),
+              } as MessageRecord);
+            }
+            insertOne('messages', {
+              id: uuidv4(),
+              conversation_id,
+              role: 'assistant',
+              content,
+              created_at: new Date().toISOString(),
+            } as MessageRecord);
+            updateOne('conversations', { id: conversation_id } as Partial<ConversationRecord>, { updated_at: new Date().toISOString() });
+          } catch {
+            // ignore save errors
           }
         }
-      
-
-      // Save to database
-      if (conversation_id && fullResponse) {
-        const supabase = getSupabaseClient();
-        // Save user message
-        const lastUserMsg = messages.filter((m: Message) => m.role === 'user').pop();
-        if (lastUserMsg) {
-          await supabase.from('messages').insert({
-            conversation_id,
-            role: 'user',
-            content: lastUserMsg.content,
-          });
-        }
-        // Save assistant message
-        await supabase.from('messages').insert({
-          conversation_id,
-          role: 'assistant',
-          content: fullResponse,
-        });
-        // Update conversation updated_at
-        await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conversation_id);
-      }
-
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-      res.end();
-    } catch (streamError) {
-      console.error('Stream error:', streamError);
-      res.write(`data: ${JSON.stringify({ error: 'Stream error' })}\n\n`);
-      res.end();
-    }
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to start chat stream' });
-  }
+        res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+        res.end();
+      },
+      onError: (err: Error & { code?: string }) => {
+        console.error('Stream error:', err.message);
+        const code = err.code || 'STREAM_ERROR';
+        res.write(`data: ${JSON.stringify({ error: code, message: err.message })}\n\n`);
+        res.end();
+      },
+    },
+    { model: model || undefined }
+  );
 });
 
 // Non-streaming chat
@@ -219,52 +193,57 @@ router.post('/send', authMiddleware, async (req: AuthRequest, res) => {
       return;
     }
 
-    const customHeaders = HeaderUtils.extractForwardHeaders(req.headers as Record<string, string>);
-    const client = new LLMClient(config, customHeaders);
-
     const formattedMessages: Message[] = [];
     if (system_prompt) {
       formattedMessages.push({ role: 'system', content: system_prompt });
     }
     formattedMessages.push(...messages);
 
-    const response = await client.invoke(formattedMessages, {
-      model: model || 'doubao-seed-2-0-pro-260215',
+    const response = await chatCompletion(formattedMessages, {
+      model: model || undefined,
       temperature: 0.7,
     });
 
     // Save to database
     if (conversation_id && response.content) {
-      const supabase = getSupabaseClient();
       const lastUserMsg = messages.filter((m: Message) => m.role === 'user').pop();
       if (lastUserMsg) {
-        await supabase.from('messages').insert({
+        insertOne('messages', {
+          id: uuidv4(),
           conversation_id,
           role: 'user',
           content: lastUserMsg.content,
-        });
+          created_at: new Date().toISOString(),
+        } as MessageRecord);
       }
-      await supabase.from('messages').insert({
+      insertOne('messages', {
+        id: uuidv4(),
         conversation_id,
         role: 'assistant',
         content: response.content,
+        created_at: new Date().toISOString(),
+      } as MessageRecord);
+      updateOne('conversations', { id: conversation_id } as Partial<ConversationRecord>, {
+        updated_at: new Date().toISOString(),
       });
-      await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conversation_id);
     }
 
     res.json({ content: response.content });
-  } catch (error) {
-    console.error('Chat error:', error);
-    res.status(500).json({ error: 'Chat failed' });
+  } catch (error: any) {
+    console.error('Chat error:', error.message);
+    if (error.code === API_ERRORS.API_KEY_NOT_CONFIGURED) {
+      res.status(400).json({ error: API_ERRORS.API_KEY_NOT_CONFIGURED, message: error.message });
+    } else {
+      res.status(500).json({ error: 'Chat failed', message: error.message });
+    }
   }
 });
 
 // 将对话内容保存到知识库
 router.post('/save-to-knowledge', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const user_id = req.userId;
-    const { knowledge_base_id, knowledge_base_name, question, answer, message_id } = req.body;
-    const supabase = getSupabaseClient();
+    const user_id = req.userId!;
+    const { knowledge_base_id, knowledge_base_name, question, answer } = req.body;
 
     if (!question && !answer) {
       res.status(400).json({ error: 'Question and answer cannot both be empty' });
@@ -279,92 +258,81 @@ router.post('/save-to-knowledge', authMiddleware, async (req: AuthRequest, res) 
         res.status(400).json({ error: 'knowledge_base_id or knowledge_base_name is required' });
         return;
       }
-      baseId = uuidv4();
-      const { error: kbError } = await supabase
-        .from('knowledge_bases')
-        .insert({
-          id: baseId,
-          user_id,
-          name: knowledge_base_name,
-          description: '从对话创建的知识库',
-        });
-      if (kbError) throw kbError;
+      const id = uuidv4();
+      const now = new Date().toISOString();
+      const base = insertOne('knowledge_bases', {
+        id,
+        user_id,
+        name: knowledge_base_name,
+        description: '',
+        created_at: now,
+        updated_at: now,
+      } as KnowledgeBaseRecord);
+      baseId = base.id;
     } else {
       // 验证知识库归属
-      const { data: kb } = await supabase
-        .from('knowledge_bases')
-        .select('id')
-        .eq('id', baseId)
-        .eq('user_id', user_id)
-        .single();
+      const kb = selectOne('knowledge_bases', { id: baseId, user_id } as Partial<KnowledgeBaseRecord>);
       if (!kb) {
         res.status(403).json({ error: 'Knowledge base not found or access denied' });
         return;
       }
     }
 
-    // 构造文档内容
-    const docTitle = question?.slice(0, 100) || '对话片段';
-    const docContent = `Q: ${question || ''}\n\nA: ${answer || ''}`;
+    // 生成文档
     const docId = uuidv4();
+    const content = `问题：${question}\n\n回答：${answer}`;
+    const title = question.slice(0, 100) || '对话保存';
 
-    // 创建文档记录
-    const { error: docError } = await supabase.from('documents').insert({
+    const doc = insertOne('documents', {
       id: docId,
       knowledge_base_id: baseId,
-      filename: `${docTitle}.txt`,
-      content_preview: docContent.slice(0, 200),
+      filename: `${title}.txt`,
+      content_preview: content.slice(0, 500),
       chunk_count: 1,
-      status: 'processing',
-    });
-    if (docError) throw docError;
+      status: 'processed',
+      created_at: new Date().toISOString(),
+    } as DocumentRecord);
 
-    // 异步向量化
-    (async () => {
-      try {
-        const chunks = splitTextIntoChunks(docContent, 500, 50);
-        const embeddingClient = new EmbeddingClient({
-          customHeaders: HeaderUtils.extractForwardHeaders(req.headers as Record<string, string>),
-        } as any);
-
-        for (let i = 0; i < chunks.length; i++) {
-          try {
-            const chunkId = uuidv4();
-            const embedding = await embeddingClient.embedText(chunks[i]);
-            if (embedding) {
-              await supabase.from('document_chunks').insert({
-                id: chunkId,
-                document_id: docId,
-                knowledge_base_id: baseId,
-                chunk_index: i,
-                content: chunks[i],
-                embedding: JSON.stringify(embedding),
-              });
-            }
-          } catch (chunkErr) {
-            console.error('Chunk embedding error:', chunkErr);
-          }
+    // 尝试向量化
+    try {
+      const chunks = splitTextIntoChunks(content, 800);
+      const chunkRecords: DocumentChunkRecord[] = [];
+      for (let i = 0; i < Math.min(chunks.length, 50); i++) {
+        try {
+          const embedding = await createEmbedding(chunks[i]);
+          chunkRecords.push({
+            id: uuidv4(),
+            document_id: docId,
+            knowledge_base_id: baseId,
+            chunk_index: i,
+            content: chunks[i],
+            embedding,
+            created_at: new Date().toISOString(),
+          });
+        } catch (embErr: any) {
+          // embedding 失败也保存纯文本
+          chunkRecords.push({
+            id: uuidv4(),
+            document_id: docId,
+            knowledge_base_id: baseId,
+            chunk_index: i,
+            content: chunks[i],
+            embedding: null,
+            created_at: new Date().toISOString(),
+          });
         }
-
-        await supabase.from('documents').update({
-          chunk_count: chunks.length,
-          status: 'completed',
-        }).eq('id', docId);
-      } catch (err) {
-        console.error('Embedding error in save-to-knowledge:', err);
-        await supabase.from('documents').update({ status: 'error' }).eq('id', docId);
       }
-    })();
+      for (const cr of chunkRecords) {
+        insertOne('document_chunks', cr);
+      }
+    } catch (embErr: any) {
+      console.warn('Embedding for saved chat failed:', embErr.message);
+    }
 
-    res.json({
-      success: true,
-      knowledge_base_id: baseId,
-      document_id: docId,
-      message: 'Saving to knowledge base',
-    });
-  } catch (err: any) {
-    console.error('Save to knowledge error:', err?.message || err);
-    res.status(500).json({ error: 'Failed to save to knowledge base' });
+    res.json({ success: true, document: doc, base_id: baseId });
+  } catch (error: any) {
+    console.error('Save to knowledge error:', error.message);
+    res.status(500).json({ error: 'Failed to save to knowledge', message: error.message });
   }
 });
 

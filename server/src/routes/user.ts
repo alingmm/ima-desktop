@@ -1,37 +1,24 @@
 import { Router } from 'express';
-import { getSupabaseClient } from '../storage/database/supabase-client.js';
-import { authMiddleware, AuthRequest } from '../middleware/auth.js';
+import { authMiddleware, AuthRequest } from '../middleware/auth';
+import {
+  findById, updateById, selectWhere, findOne, insertOne,
+  UserRecord, UserSettingRecord,
+  ConversationRecord, KnowledgeBaseRecord, VideoTaskRecord, DocumentRecord,
+} from '../storage/json-storage';
 
-const router: import("express").Router = Router();
+const router: import('express').Router = Router();
 
 // Get user profile
 router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const supabase = getSupabaseClient();
-
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', req.userId)
-      .single();
-
-    if (error) {
-      // Return default user if not found
-      res.json({
-        user: {
-          id: req.userId,
-          email: req.userEmail,
-          name: 'User',
-          avatar_url: null,
-          created_at: new Date().toISOString(),
-        },
-      });
+    const user = findById('users', req.userId!);
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
       return;
     }
-
-    res.json({ user: data });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get user profile' });
+    res.json({ user });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to get profile', message: error.message });
   }
 });
 
@@ -39,94 +26,63 @@ router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
 router.put('/profile', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const { name, avatar_url } = req.body;
-    const supabase = getSupabaseClient();
 
-    const updates: Record<string, unknown> = {};
+    const updates: Partial<UserRecord> = {};
     if (name !== undefined) updates.name = name;
     if (avatar_url !== undefined) updates.avatar_url = avatar_url;
 
-    const { data, error } = await supabase
-      .from('users')
-      .update(updates)
-      .eq('id', req.userId)
-      .select()
-      .single();
-
-    if (error) throw error;
-    res.json({ user: data });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update profile' });
+    const updated = updateById('users', req.userId!, updates);
+    res.json({ user: updated });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to update profile', message: error.message });
   }
 });
 
 // Get user stats
 router.get('/stats', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const supabase = getSupabaseClient();
-
-    // Count conversations
-    const { count: conversationCount, error: convError } = await supabase
-      .from('conversations')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', req.userId);
-
-    // Count knowledge bases
-    const { count: kbCount, error: kbError } = await supabase
-      .from('knowledge_bases')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', req.userId);
-
-    // Count video tasks
-    const { count: videoCount, error: videoError } = await supabase
-      .from('video_tasks')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', req.userId);
-
-    // Count documents
-    const { count: docCount, error: docError } = await supabase
-      .from('documents')
-      .select('*', { count: 'exact', head: true });
+    const conversationCount = selectWhere('conversations', { user_id: req.userId } as Partial<ConversationRecord>).length;
+    const kbCount = selectWhere('knowledge_bases', { user_id: req.userId } as Partial<KnowledgeBaseRecord>).length;
+    const videoCount = selectWhere('video_tasks', { user_id: req.userId } as Partial<VideoTaskRecord>).length;
+    const docCount = selectWhere('documents', { user_id: req.userId } as Partial<DocumentRecord>).length;
 
     res.json({
       stats: {
-        conversations: conversationCount || 0,
-        knowledge_bases: kbCount || 0,
-        video_tasks: videoCount || 0,
-        documents: docCount || 0,
+        conversations: conversationCount,
+        knowledge_bases: kbCount,
+        video_tasks: videoCount,
+        documents: docCount,
       },
     });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get user stats' });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to get user stats', message: error.message });
   }
 });
 
 // Get user settings
 router.get('/settings', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const supabase = getSupabaseClient();
+    const settings = findOne('user_settings', { user_id: req.userId } as Partial<UserSettingRecord>);
 
-    const { data, error } = await supabase
-      .from('user_settings')
-      .select('*')
-      .eq('user_id', req.userId)
-      .single();
-
-    if (error || !data) {
+    if (!settings) {
       // Return default settings
       res.json({
         settings: {
-          default_model: 'doubao-seed-2-0-pro-260215',
+          user_id: req.userId,
+          default_model: 'gpt-4o-mini',
           theme: 'dark',
           language: 'zh-CN',
           stream_output: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
         },
       });
       return;
     }
 
-    res.json({ settings: data });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to get settings' });
+    res.json({ settings });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to get settings', message: error.message });
   }
 });
 
@@ -134,28 +90,34 @@ router.get('/settings', authMiddleware, async (req: AuthRequest, res) => {
 router.put('/settings', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const { default_model, theme, language, stream_output } = req.body;
-    const supabase = getSupabaseClient();
 
-    const updates: Record<string, unknown> = {};
-    if (default_model !== undefined) updates.default_model = default_model;
-    if (theme !== undefined) updates.theme = theme;
-    if (language !== undefined) updates.language = language;
-    if (stream_output !== undefined) updates.stream_output = stream_output;
+    const existing = findOne('user_settings', { user_id: req.userId } as Partial<UserSettingRecord>);
+    const now = new Date().toISOString();
 
-    // Try update, if not exists insert
-    const { data, error } = await supabase
-      .from('user_settings')
-      .upsert(
-        { user_id: req.userId, ...updates },
-        { onConflict: 'user_id' }
-      )
-      .select()
-      .single();
+    if (existing) {
+      const updates: Partial<UserSettingRecord> = { updated_at: now };
+      if (default_model !== undefined) updates.default_model = default_model;
+      if (theme !== undefined) updates.theme = theme;
+      if (language !== undefined) updates.language = language;
+      if (stream_output !== undefined) updates.stream_output = stream_output;
 
-    if (error) throw error;
-    res.json({ settings: data });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to update settings' });
+      const updated = updateById('user_settings', existing.id, updates);
+      res.json({ settings: updated });
+    } else {
+      const settings = insertOne('user_settings', {
+        id: `settings-${req.userId}`,
+        user_id: req.userId!,
+        default_model: default_model || 'gpt-4o-mini',
+        theme: theme || 'dark',
+        language: language || 'zh-CN',
+        stream_output: stream_output !== undefined ? stream_output : true,
+        created_at: now,
+        updated_at: now,
+      } as UserSettingRecord);
+      res.json({ settings });
+    }
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to update settings', message: error.message });
   }
 });
 
