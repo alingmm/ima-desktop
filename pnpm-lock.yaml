@@ -45,9 +45,9 @@ importers:
       electron-builder:
         specifier: ^25.1.8
         version: 25.1.8(electron-builder-squirrel-windows@25.1.8)
-      electron-is-dev:
-        specifier: ^3.0.1
-        version: 3.0.1
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
       wait-on:
         specifier: ^8.0.0
         version: 8.0.5
@@ -1517,10 +1517,6 @@ packages:
     resolution: {integrity: sha512-poRgAtUHHOnlzZnc9PK4nzG53xh74wj2Jy7jkTrqZ0MWPoHGh1M2+C//hGeYdA+4K8w4yiVCNYoLXF7ySj2Wig==}
     engines: {node: '>=14.0.0'}
     hasBin: true
-
-  electron-is-dev@3.0.1:
-    resolution: {integrity: sha512-8TjjAh8Ec51hUi3o4TaU0mD3GMTOESi866oRNavj9A3IQJ7pmv+MJVmdZBFGw4GFT36X7bkqnuDNYvkQgvyI8Q==}
-    engines: {node: '>=18'}
 
   electron-publish@25.1.7:
     resolution: {integrity: sha512-+jbTkR9m39eDBMP4gfbqglDd6UvBC7RLh5Y0MhFSsc6UkGHj9Vj9TWobxevHYMMqmoujL11ZLjfPpMX+Pt6YEg==}
@@ -4562,8 +4558,6 @@ snapshots:
       - bluebird
       - electron-builder-squirrel-windows
       - supports-color
-
-  electron-is-dev@3.0.1: {}
 
   electron-publish@25.1.7:
     dependencies:

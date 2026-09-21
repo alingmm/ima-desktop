@@ -1,7 +1,9 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import * as path from 'path';
 import * as net from 'net';
-import isDev from 'electron-is-dev';
+
+// 使用 Electron 内置 API 判断开发环境，避免依赖外部包
+const isDev = !app.isPackaged;
 
 // 静态引用后端模块，确保 electron-builder 能分析到依赖
 // 开发环境下 server/dist 可能不存在，用动态 require 兜底
@@ -124,6 +126,51 @@ function createWindow(port: number): void {
   });
 }
 
+// IPC: 窗口控制
+ipcMain.handle('window:minimize', () => {
+  mainWindow?.minimize();
+});
+
+ipcMain.handle('window:maximize', () => {
+  if (mainWindow?.isMaximized()) {
+    mainWindow.unmaximize();
+  } else {
+    mainWindow?.maximize();
+  }
+  return mainWindow?.isMaximized() ?? false;
+});
+
+ipcMain.handle('window:close', () => {
+  mainWindow?.close();
+});
+
+ipcMain.handle('window:isMaximized', () => {
+  return mainWindow?.isMaximized() ?? false;
+});
+
+// IPC: 文件对话框
+ipcMain.handle('dialog:openFile', async (_event, options = {}) => {
+  if (!mainWindow) return { canceled: true, filePaths: [] };
+  return dialog.showOpenDialog(mainWindow, options);
+});
+
+ipcMain.handle('dialog:openDirectory', async (_event, options = {}) => {
+  if (!mainWindow) return { canceled: true, filePaths: [] };
+  return dialog.showOpenDialog(mainWindow, { ...options, properties: ['openDirectory', ...(options.properties || [])] });
+});
+
+ipcMain.handle('dialog:saveFile', async (_event, options = {}) => {
+  if (!mainWindow) return { canceled: true, filePath: '' };
+  return dialog.showSaveDialog(mainWindow, options);
+});
+
+// IPC: 应用信息
+ipcMain.handle('app:getVersion', () => app.getVersion());
+ipcMain.handle('app:getName', () => app.getName());
+ipcMain.handle('app:getPath', (_event, name: string) => app.getPath(name as any));
+ipcMain.handle('app:isElectron', () => true);
+ipcMain.handle('app:platform', () => process.platform);
+
 // App lifecycle
 app.whenReady().then(async () => {
   try {
@@ -149,7 +196,9 @@ app.whenReady().then(async () => {
   });
 });
 
+// Quit when all windows are closed (except macOS)
 app.on('window-all-closed', () => {
+  // 关闭后端服务
   if (httpServer) {
     httpServer.close();
     httpServer = null;
@@ -157,73 +206,4 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
-});
-
-app.on('before-quit', () => {
-  if (httpServer) {
-    httpServer.close();
-    httpServer = null;
-  }
-});
-
-// ===== Window Control IPC =====
-ipcMain.handle('window:minimize', () => {
-  mainWindow?.minimize();
-});
-
-ipcMain.handle('window:maximize', () => {
-  if (mainWindow?.isMaximized()) {
-    mainWindow.unmaximize();
-  } else {
-    mainWindow?.maximize();
-  }
-  return mainWindow?.isMaximized() ?? false;
-});
-
-ipcMain.handle('window:close', () => {
-  mainWindow?.close();
-});
-
-ipcMain.handle('window:isMaximized', () => {
-  return mainWindow?.isMaximized() ?? false;
-});
-
-// ===== Dialog IPC =====
-ipcMain.handle('dialog:openFile', async (_event, options = {}) => {
-  if (!mainWindow) return { canceled: true, filePaths: [] };
-  return dialog.showOpenDialog(mainWindow, options as Electron.OpenDialogOptions);
-});
-
-ipcMain.handle('dialog:openDirectory', async (_event, options = {}) => {
-  if (!mainWindow) return { canceled: true, filePaths: [] };
-  return dialog.showOpenDialog(mainWindow, {
-    ...(options as Electron.OpenDialogOptions),
-    properties: ['openDirectory'],
-  });
-});
-
-ipcMain.handle('dialog:saveFile', async (_event, options = {}) => {
-  if (!mainWindow) return { canceled: true, filePath: '' };
-  return dialog.showSaveDialog(mainWindow, options as Electron.SaveDialogOptions);
-});
-
-// ===== App Info IPC =====
-ipcMain.handle('app:getVersion', () => {
-  return app.getVersion();
-});
-
-ipcMain.handle('app:getName', () => {
-  return app.getName();
-});
-
-ipcMain.handle('app:getPath', (_event, name: string) => {
-  return app.getPath(name as Parameters<typeof app.getPath>[0]);
-});
-
-ipcMain.handle('app:isElectron', () => {
-  return true;
-});
-
-ipcMain.handle('app:platform', () => {
-  return process.platform;
 });
