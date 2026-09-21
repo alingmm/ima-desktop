@@ -5,7 +5,7 @@ import * as net from 'net';
 // 使用 Electron 内置 API 判断开发环境，避免依赖外部包
 const isDev = !app.isPackaged;
 
-// 后端模块延迟加载：必须在 app.whenReady 且设置 USER_DATA_PATH 之后
+// 后端模块延迟加载：必须在 app.whenReady 且设置 IMA_USER_DATA_DIR 之后
 // 否则 server 端 config.ts 会在 asar 只读目录下初始化数据目录
 let serverModule: { startServer: (port: number, clientDir?: string) => any } | null = null;
 
@@ -59,9 +59,9 @@ async function startBackend(): Promise<number> {
 
   // 设置用户数据目录到环境变量，供后端 config.ts 使用
   // 必须在 require 后端模块之前设置，避免初始化时回退到只读目录
-  process.env.USER_DATA_PATH = app.getPath('userData');
+  process.env.IMA_USER_DATA_DIR = app.getPath('userData');
 
-  // 延迟加载后端模块（必须在 USER_DATA_PATH 设置后）
+  // 延迟加载后端模块（必须在 IMA_USER_DATA_DIR 设置后）
   if (!serverModule) {
     // @ts-ignore - 生产构建时存在
     serverModule = require('../server/dist/index.js');
@@ -73,7 +73,7 @@ async function startBackend(): Promise<number> {
     const clientDistPath = path.join(__dirname, '..', 'client', 'dist');
 
     console.log('[Backend] Starting on port:', port);
-    console.log('[Backend] User data:', process.env.USER_DATA_PATH);
+    console.log('[Backend] User data:', process.env.IMA_USER_DATA_DIR);
     console.log('[Backend] Client dist:', clientDistPath);
 
     if (!serverModule) {

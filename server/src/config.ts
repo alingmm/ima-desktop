@@ -2,9 +2,9 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 
-// 用户数据目录优先级：环境变量 USER_DATA_PATH > 家目录 .ima-workstation
+// 用户数据目录优先级：环境变量 IMA_USER_DATA_DIR > 家目录 .ima-workstation
 export function getUserDataDir(): string {
-  const envDir = process.env.USER_DATA_PATH;
+  const envDir = process.env.IMA_USER_DATA_DIR;
   if (envDir) {
     return envDir;
   }
