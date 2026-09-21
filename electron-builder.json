@@ -19,8 +19,7 @@
   "asar": true,
   "asarUnpack": [
     "node_modules/**/*.node",
-    "node_modules/**/*better-sqlite3*",
-    "server/uploads/**/*"
+    "node_modules/**/*better-sqlite3*"
   ],
   "win": {
     "target": [

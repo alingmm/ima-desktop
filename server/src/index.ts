@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { createServer, Server as HTTPServer } from 'http';
+import { initDataDirs, getUploadsDir } from './config';
 
 import chatRoutes from './routes/chat';
 import knowledgeRoutes from './routes/knowledge';
@@ -15,6 +16,9 @@ import localModelRoutes from './routes/local-model';
 import settingsRoutes from './routes/settings';
 
 export function createApp(clientDistDir?: string): express.Express {
+  // 启动前确保数据目录存在（必须在所有路由前完成）
+  initDataDirs();
+
   const app = express();
 
   app.use(cors());

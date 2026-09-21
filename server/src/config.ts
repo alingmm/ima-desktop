@@ -2,9 +2,9 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 
-// 用户数据目录优先级：环境变量 > 家目录 .ima-workstation
+// 用户数据目录优先级：环境变量 USER_DATA_PATH > 家目录 .ima-workstation
 export function getUserDataDir(): string {
-  const envDir = process.env.IMA_USER_DATA_DIR;
+  const envDir = process.env.USER_DATA_PATH;
   if (envDir) {
     return envDir;
   }
@@ -31,6 +31,13 @@ export function getDataDir(): string {
 // 上传文件目录
 export function getUploadsDir(): string {
   return path.join(getUserDataDir(), 'uploads');
+}
+
+// 初始化所有数据目录（启动时调用一次）
+export function initDataDirs(): void {
+  ensureDir(getUserDataDir());
+  ensureDir(getDataDir());
+  ensureDir(getUploadsDir());
 }
 
 // ========== 配置类型 ==========
