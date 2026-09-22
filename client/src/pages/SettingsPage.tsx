@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Settings, User, Palette, Bell, Shield, HelpCircle, ChevronRight, Save, Cpu, RefreshCw, Download, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
-import { localModelApi } from '../api';
+import { Settings, User, Palette, Bell, Shield, HelpCircle, ChevronRight, Save, Cpu, RefreshCw, Download, CheckCircle, AlertCircle, Loader2, Key, Globe, Eye, EyeOff } from 'lucide-react';
+import { localModelApi, settingsApi } from '../api';
 import type { OllamaModel } from '../types';
 import { useLocalSettings } from '../hooks/useLocalSettings';
+import { useToast } from '../components/Toast';
 
 type SettingsSection = 'profile' | 'appearance' | 'models' | 'notifications' | 'security' | 'about';
 
@@ -296,6 +297,7 @@ function SettingsPage() {
 // Local model settings component
 function ModelSettings() {
   const { settings, updateSettings } = useLocalSettings();
+  const { success: toastSuccess, error: toastError } = useToast();
   const [ollamaUrlInput, setOllamaUrlInput] = useState(settings.ollamaUrl);
   const [localModels, setLocalModels] = useState<OllamaModel[]>([]);
   const [checking, setChecking] = useState(false);
@@ -304,11 +306,73 @@ function ModelSettings() {
   const [pulling, setPulling] = useState(false);
   const [pullModelName, setPullModelName] = useState('');
   const [streamOutput, setStreamOutput] = useState(true);
-  const [defaultCloudModel, setDefaultCloudModel] = useState('doubao-seed-2-0-pro-260215');
+
+  // Cloud API settings state
+  const [cloudLoading, setCloudLoading] = useState(false);
+  const [cloudSaving, setCloudSaving] = useState(false);
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState('');
+  const [openaiApiKey, setOpenaiApiKey] = useState('');
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+  const [apiKeyTail, setApiKeyTail] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [chatModel, setChatModel] = useState('');
+  const [embeddingModel, setEmbeddingModel] = useState('');
+  const [searchApiKey, setSearchApiKey] = useState('');
+  const [searchKeyConfigured, setSearchKeyConfigured] = useState(false);
+  const [searchKeyTail, setSearchKeyTail] = useState('');
+  const [showSearchKey, setShowSearchKey] = useState(false);
 
   useEffect(() => {
-    setOllamaUrlInput(settings.ollamaUrl);
-  }, [settings.ollamaUrl]);
+    loadCloudSettings();
+  }, []);
+
+  const loadCloudSettings = async () => {
+    setCloudLoading(true);
+    try {
+      const res = await settingsApi.getSettings();
+      const s = res.settings;
+      setOpenaiBaseUrl(s.openaiBaseUrl || '');
+      setApiKeyConfigured(!!s.openaiApiKeyConfigured);
+      setApiKeyTail(s.openaiApiKeyTail || '');
+      setChatModel(s.chatModel || '');
+      setEmbeddingModel(s.embeddingModel || '');
+      setSearchKeyConfigured(!!s.searchApiKeyConfigured);
+      setSearchKeyTail(s.searchApiKeyTail || '');
+    } catch (e: any) {
+      console.warn('加载云端设置失败:', e);
+    } finally {
+      setCloudLoading(false);
+    }
+  };
+
+  const saveCloudSettings = async () => {
+    setCloudSaving(true);
+    try {
+      const payload: Record<string, any> = {
+        openaiBaseUrl,
+        chatModel,
+        embeddingModel,
+      };
+      // 只有用户填了新值才提交 key，空串不发送
+      if (openaiApiKey.trim()) payload.openaiApiKey = openaiApiKey.trim();
+      if (searchApiKey.trim()) payload.searchApiKey = searchApiKey.trim();
+
+      const res = await settingsApi.updateSettings(payload);
+      const s = res.settings;
+      setApiKeyConfigured(!!s.openaiApiKeyConfigured);
+      setApiKeyTail(s.openaiApiKeyTail || '');
+      setSearchKeyConfigured(!!s.searchApiKeyConfigured);
+      setSearchKeyTail(s.searchApiKeyTail || '');
+      // 清空 key 输入框
+      setOpenaiApiKey('');
+      setSearchApiKey('');
+      toastSuccess('设置已保存');
+    } catch (e: any) {
+      toastError(e.message || '保存失败');
+    } finally {
+      setCloudSaving(false);
+    }
+  };
 
   const checkOllama = async () => {
     setChecking(true);
@@ -364,48 +428,180 @@ function ModelSettings() {
 
   return (
     <div className="space-y-8">
-      {/* Cloud models */}
+      {/* Cloud API */}
       <div className="space-y-5">
-        <h2 className="text-xl font-semibold text-white">云端模型</h2>
-        <div>
-          <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
-            默认对话模型
-          </label>
-          <select
-            value={defaultCloudModel}
-            onChange={(e) => setDefaultCloudModel(e.target.value)}
-            className="w-full max-w-md px-4 py-2.5 bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)]"
-          >
-            <option value="doubao-seed-2-0-pro-260215">豆包 Pro (推荐)</option>
-            <option value="doubao-seed-2-0-lite-260215">豆包 Lite</option>
-            <option value="minimax-m2-7-260318">MiniMax M2</option>
-            <option value="qwen-3-5-plus-260215">通义千问</option>
-          </select>
-          <p className="text-xs text-[var(--color-text-muted)] mt-2">
-            需配置 API Key 后可用，打包到本地运行时失效</p>
-        </div>
-
-        {/* Stream output */}
-        <div className="flex items-center justify-between max-w-md">
+        <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm text-[var(--color-text-primary)]">流式输出</p>
-            <p className="text-xs text-[var(--color-text-muted)] mt-0.5">
-              逐字显示 AI 回复内容
+            <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+              <Globe className="w-5 h-5 text-blue-400" />
+              云端模型 API
+            </h2>
+            <p className="text-[var(--color-text-secondary)] text-sm mt-1">
+              配置 OpenAI 兼容接口与 Tavily 搜索，支持所有云端模型服务
             </p>
           </div>
-          <button
-            onClick={() => setStreamOutput(!streamOutput)}
-            className={`relative w-12 h-6 rounded-full transition-colors ${
-              streamOutput ? 'bg-[var(--color-primary)]' : 'bg-[var(--color-border)]'
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
-                streamOutput ? 'translate-x-6' : 'translate-x-0.5'
-              }`}
-            ></span>
-          </button>
         </div>
+
+        {cloudLoading ? (
+          <div className="p-8 flex justify-center text-[var(--color-text-muted)]">
+            <Loader2 className="w-5 h-5 animate-spin" />
+          </div>
+        ) : (
+          <div className="p-5 bg-[var(--color-card-bg)] rounded-xl border border-[var(--color-border)] space-y-5">
+            {/* Base URL */}
+            <div>
+              <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
+                API 接口地址 (Base URL)
+              </label>
+              <input
+                type="text"
+                value={openaiBaseUrl}
+                onChange={(e) => setOpenaiBaseUrl(e.target.value)}
+                placeholder="https://api.openai.com/v1"
+                className="w-full px-4 py-2.5 bg-[#0f1419] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] text-sm font-mono"
+              />
+              <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                支持任何 OpenAI 兼容的服务，如 OpenAI 官方、DeepSeek、通义千问、Moonshot 等
+              </p>
+            </div>
+
+            {/* API Key */}
+            <div>
+              <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
+                <Key className="w-4 h-4 inline mr-1.5 -mt-0.5" />
+                API Key
+              </label>
+              <div className="relative">
+                <input
+                  type={showApiKey ? 'text' : 'password'}
+                  value={openaiApiKey}
+                  onChange={(e) => setOpenaiApiKey(e.target.value)}
+                  placeholder={
+                    apiKeyConfigured
+                      ? `已配置 (尾号 ${apiKeyTail}${apiKeyTail.length < 4 ? '' : ''})，留空则不修改`
+                      : 'sk-...'
+                  }
+                  className="w-full px-4 py-2.5 pr-12 bg-[#0f1419] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] text-sm font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors"
+                >
+                  {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {apiKeyConfigured && (
+                <div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-400">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  API Key 已配置
+                </div>
+              )}
+            </div>
+
+            {/* Chat model + Embedding model */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
+                  对话模型
+                </label>
+                <input
+                  type="text"
+                  value={chatModel}
+                  onChange={(e) => setChatModel(e.target.value)}
+                  placeholder="gpt-4o-mini"
+                  className="w-full px-4 py-2.5 bg-[#0f1419] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] text-sm font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
+                  向量模型 (Embedding)
+                </label>
+                <input
+                  type="text"
+                  value={embeddingModel}
+                  onChange={(e) => setEmbeddingModel(e.target.value)}
+                  placeholder="text-embedding-3-small"
+                  className="w-full px-4 py-2.5 bg-[#0f1419] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] text-sm font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-[var(--color-border)]" />
+
+            {/* Search API Key */}
+            <div>
+              <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
+                联网搜索 API Key (Tavily)
+              </label>
+              <div className="relative">
+                <input
+                  type={showSearchKey ? 'text' : 'password'}
+                  value={searchApiKey}
+                  onChange={(e) => setSearchApiKey(e.target.value)}
+                  placeholder={
+                    searchKeyConfigured
+                      ? `已配置 (尾号 ${searchKeyTail})，留空则不修改`
+                      : 'tvly-...'
+                  }
+                  className="w-full px-4 py-2.5 pr-12 bg-[#0f1419] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] text-sm font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowSearchKey(!showSearchKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors"
+                >
+                  {showSearchKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {searchKeyConfigured && (
+                <div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-400">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  搜索 API Key 已配置
+                </div>
+              )}
+              <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                前往：<a href="https://tavily.com" target="_blank" rel="noreferrer" className="underline">tavily.com</a> 获取免费 Key
+              </p>
+            </div>
+
+            {/* Save button */}
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={saveCloudSettings}
+                disabled={cloudSaving}
+                className="px-5 py-2.5 bg-[var(--color-primary)] hover:opacity-90 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-opacity flex items-center gap-2"
+              >
+                {cloudSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+                {cloudSaving ? '保存中...' : '保存设置'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-[var(--color-border)]" />
+
+      {/* Stream output toggle */}
+      <div className="flex items-center justify-between max-w-md pt-2">
+        <div>
+          <p className="text-sm text-[var(--color-text-primary)]">流式输出</p>
+          <p className="text-xs text-[var(--color-text-muted)] mt-0.5">
+            逐字显示 AI 回复内容
+          </p>
+        </div>
+        <button
+          onClick={() => setStreamOutput(!streamOutput)}
+          className={`relative w-12 h-6 rounded-full transition-colors ${
+            streamOutput ? 'bg-[var(--color-primary)]' : 'bg-[var(--color-border)]'
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+              streamOutput ? 'translate-x-6' : 'translate-x-0.5'
+            }`}
+          ></span>
+        </button>
       </div>
 
       <div className="border-t border-[var(--color-border)]" />

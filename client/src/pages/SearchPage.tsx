@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { Search, ExternalLink, Clock, Sparkles, Loader, Globe, Database, BookmarkPlus, ChevronLeft, Link as LinkIcon, Copy, Check } from 'lucide-react';
 import { searchApi, knowledgeApi } from '../api';
 import type { SearchResult, BrowseResult, KnowledgeBase } from '../types';
+import { useToast, showApiError } from '../components/Toast';
 
 type TabType = 'search' | 'browse';
 
 function SearchPage() {
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<TabType>('search');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -43,8 +45,9 @@ function SearchPage() {
       if (!searchHistory.includes(query.trim())) {
         setSearchHistory([query.trim(), ...searchHistory.slice(0, 9)]);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Search failed:', error);
+      showApiError(error, toast);
     } finally {
       setIsSearching(false);
     }
@@ -94,8 +97,9 @@ function SearchPage() {
           }
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Summary failed:', error);
+      showApiError(error, toast);
     } finally {
       setIsSummarizing(false);
     }
@@ -112,9 +116,9 @@ function SearchPage() {
       setIsBrowsing(true);
       const res = await searchApi.browse(url);
       setBrowseResult(res);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Browse failed:', error);
-      alert('无法访问该网页，请检查URL是否正确');
+      showApiError(error, toast);
     } finally {
       setIsBrowsing(false);
     }

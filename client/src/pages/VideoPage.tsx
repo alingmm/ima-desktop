@@ -12,10 +12,12 @@ import {
 } from 'lucide-react';
 import { videoApi } from '../api';
 import type { VideoTask } from '../types';
+import { useToast, showApiError } from '../components/Toast';
 
 type TabType = 'text-to-video' | 'image-to-video';
 
 function VideoPage() {
+  const toast = useToast();
   const [activeTab, setActiveTab] = useState<TabType>('text-to-video');
   const [tasks, setTasks] = useState<VideoTask[]>([]);
   const [prompt, setPrompt] = useState('');
@@ -66,9 +68,9 @@ function VideoPage() {
       setTasks([res.task, ...tasks]);
       setPrompt('');
       setSelectedImage(null);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to create video task:', error);
-      alert('生成失败，请稍后重试');
+      showApiError(error, toast);
     } finally {
       setGenerating(false);
     }

@@ -4,8 +4,10 @@ import { chatApi, knowledgeApi, localModelApi } from '../api';
 import type { Message, Model, KnowledgeBase, OllamaModel } from '../types';
 import ReactMarkdown from 'react-markdown';
 import { useLocalSettings } from '../hooks/useLocalSettings';
+import { useToast, showApiError } from '../components/Toast';
 
 function ChatPage() {
+  const toast = useToast();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [models, setModels] = useState<Model[]>([]);
@@ -141,15 +143,11 @@ function ChatPage() {
       setShowKnowledgeModal(false);
       setSavingToKnowledge(false);
       // 显示成功提示
-      const toast = document.createElement('div');
-      toast.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded-lg z-50 text-sm';
-      toast.textContent = '已成功保存到知识库';
-      document.body.appendChild(toast);
-      setTimeout(() => toast.remove(), 2000);
-    } catch (err) {
+      toast.success('已成功保存到知识库');
+    } catch (err: any) {
       console.error('Failed to save to knowledge:', err);
       setSavingToKnowledge(false);
-      alert('保存失败，请重试');
+      showApiError(err, toast);
     }
   };
 
@@ -272,13 +270,15 @@ function ChatPage() {
           }
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Chat error:', error);
+      const errMsg = error?.message || '请求失败，请稍后重试';
+      showApiError(error, toast);
       setMessages((prev) => {
         const newMessages = [...prev];
         newMessages[newMessages.length - 1] = {
           role: 'assistant',
-          content: '抱歉，出现了错误，请稍后重试。',
+          content: `❌ ${errMsg}`,
         };
         return newMessages;
       });

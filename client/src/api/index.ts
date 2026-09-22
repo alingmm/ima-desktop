@@ -229,6 +229,40 @@ export const userApi = {
     }),
 };
 
+// Settings APIs (system-level: API keys, model configs)
+export const settingsApi = {
+  getSettings: () =>
+    request<{
+      settings: {
+        openaiBaseUrl: string;
+        chatModel: string;
+        embeddingModel: string;
+        searchProvider: string;
+        openaiApiKeyConfigured: boolean;
+        openaiApiKeyTail?: string;
+        searchApiKeyConfigured: boolean;
+        searchApiKeyTail?: string;
+      };
+    }>('/settings'),
+  updateSettings: (data: Record<string, any>) =>
+    request<{
+      success: boolean;
+      settings: {
+        openaiBaseUrl: string;
+        chatModel: string;
+        embeddingModel: string;
+        searchProvider: string;
+        openaiApiKeyConfigured: boolean;
+        openaiApiKeyTail?: string;
+        searchApiKeyConfigured: boolean;
+        searchApiKeyTail?: string;
+      };
+    }>('/settings', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+};
+
 // Notes APIs
 export const notesApi = {
   getNotes: (params?: { search?: string; tag?: string; sort_by?: string; order?: string }) => {

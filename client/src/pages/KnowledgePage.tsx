@@ -18,8 +18,10 @@ import {
 } from 'lucide-react';
 import { knowledgeApi } from '../api';
 import type { KnowledgeBase, Document } from '../types';
+import { useToast, showApiError } from '../components/Toast';
 
 function KnowledgePage() {
+  const toast = useToast();
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [selectedKb, setSelectedKb] = useState<KnowledgeBase | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -78,8 +80,9 @@ function KnowledgePage() {
       setShowCreateModal(false);
       setNewKbName('');
       setNewKbDesc('');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to create knowledge base:', error);
+      showApiError(error, toast);
     }
   };
 
@@ -92,8 +95,9 @@ function KnowledgePage() {
       if (selectedKb?.id === id) {
         setSelectedKb(null);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to delete knowledge base:', error);
+      showApiError(error, toast);
     }
   };
 
@@ -106,8 +110,9 @@ function KnowledgePage() {
         await knowledgeApi.uploadDocument(selectedKb.id, file);
       }
       await loadDocuments(selectedKb.id);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to upload document:', error);
+      showApiError(error, toast);
     } finally {
       setUploading(false);
       e.target.value = '';
@@ -119,8 +124,9 @@ function KnowledgePage() {
     try {
       await knowledgeApi.deleteDocument(docId);
       setDocuments(documents.filter((d) => d.id !== docId));
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to delete document:', error);
+      showApiError(error, toast);
     }
   };
 
@@ -166,8 +172,9 @@ function KnowledgePage() {
           }
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('RAG search error:', error);
+      showApiError(error, toast);
       setChatAnswer('搜索失败，请稍后重试。');
     } finally {
       setIsSearching(false);
