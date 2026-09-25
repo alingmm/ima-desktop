@@ -26,7 +26,7 @@ function ensureSearchKey(): string {
   return config.searchApiKey;
 }
 
-interface TavilyResult {
+export interface TavilyResult {
   title: string;
   url: string;
   content: string;
@@ -35,7 +35,7 @@ interface TavilyResult {
   favicon?: string;
 }
 
-async function tavilySearch(query: string, options: { maxResults?: number; searchDepth?: 'basic' | 'advanced'; includeAnswer?: boolean } = {}): Promise<{ results: TavilyResult[]; answer?: string; responseTime?: number }> {
+export async function tavilySearch(query: string, options: { maxResults?: number; searchDepth?: 'basic' | 'advanced'; includeAnswer?: boolean } = {}): Promise<{ results: TavilyResult[]; answer?: string; responseTime?: number }> {
   const apiKey = ensureSearchKey();
   const { maxResults = 10, searchDepth = 'basic', includeAnswer = false } = options;
 

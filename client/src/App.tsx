@@ -6,9 +6,10 @@ import NotesPage from './pages/NotesPage';
 import VideoPage from './pages/VideoPage';
 import SearchPage from './pages/SearchPage';
 import SettingsPage from './pages/SettingsPage';
+import TrackingPage from './pages/TrackingPage';
 import { ToastProvider } from './components/Toast';
 
-export type PageType = 'chat' | 'knowledge' | 'notes' | 'video' | 'search' | 'settings';
+export type PageType = 'chat' | 'knowledge' | 'notes' | 'tracking' | 'video' | 'search' | 'settings';
 
 function App() {
   const [currentPage, setCurrentPage] = useState<PageType>('chat');
@@ -30,6 +31,8 @@ function App() {
         return <KnowledgePage />;
       case 'notes':
         return <NotesPage />;
+      case 'tracking':
+        return <TrackingPage />;
       case 'video':
         return <VideoPage />;
       case 'search':

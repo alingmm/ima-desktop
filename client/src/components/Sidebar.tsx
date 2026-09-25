@@ -8,6 +8,7 @@ import {
   Trash2,
   Sparkles,
   StickyNote,
+  Activity,
 } from 'lucide-react';
 import type { PageType } from '../App';
 import { useState, useEffect } from 'react';
@@ -23,6 +24,7 @@ const navItems = [
   { id: 'chat' as PageType, label: '对话', icon: MessageSquare },
   { id: 'knowledge' as PageType, label: '知识库', icon: BookOpen },
   { id: 'notes' as PageType, label: '笔记', icon: StickyNote },
+  { id: 'tracking' as PageType, label: '追踪', icon: Activity },
   { id: 'video' as PageType, label: '视频生成', icon: Video },
   { id: 'search' as PageType, label: '联网搜索', icon: Search },
   { id: 'settings' as PageType, label: '设置', icon: Settings },

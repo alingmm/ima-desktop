@@ -14,6 +14,8 @@ import userRoutes from './routes/user';
 import notesRoutes from './routes/notes';
 import localModelRoutes from './routes/local-model';
 import settingsRoutes from './routes/settings';
+import trackingRoutes from './routes/tracking';
+import { startTaskScheduler } from './tasks/scheduler';
 
 export function createApp(clientDistDir?: string): express.Express {
   // 启动前确保数据目录存在（必须在所有路由前完成）
@@ -39,6 +41,10 @@ export function createApp(clientDistDir?: string): express.Express {
   app.use('/api/notes', notesRoutes);
   app.use('/api/local-model', localModelRoutes);
   app.use('/api/settings', settingsRoutes);
+  app.use('/api/tracking', trackingRoutes);
+
+  // 启动定时任务调度器
+  startTaskScheduler();
 
   // Serve static files in production
   const clientDistPath = clientDistDir || path.resolve(__dirname, '../../client/dist');

@@ -325,6 +325,40 @@ export const notesApi = {
     }),
 };
 
+// Tracking (话题追踪) APIs
+export const trackingApi = {
+  getProjects: () =>
+    request<{ projects: any[] }>('/tracking/projects'),
+
+  getProject: (id: string) =>
+    request<{ project: any }>(`/tracking/projects/${id}`),
+
+  createProject: (data: any) =>
+    request<{ project: any }>('/tracking/projects', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateProject: (id: string, data: any) =>
+    request<{ project: any }>(`/tracking/projects/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  deleteProject: (id: string) =>
+    request<{ success: boolean }>(`/tracking/projects/${id}`, {
+      method: 'DELETE',
+    }),
+
+  getRuns: (projectId: string) =>
+    request<{ runs: any[] }>(`/tracking/projects/${projectId}/runs`),
+
+  runProject: (projectId: string) =>
+    request<any>(`/tracking/projects/${projectId}/run`, {
+      method: 'POST',
+    }),
+};
+
 // Local model (Ollama) APIs
 export const localModelApi = {
   checkHealth: (ollamaUrl?: string) => {
