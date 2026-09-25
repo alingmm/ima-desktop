@@ -1,415 +1,334 @@
-import { useState, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   Video,
-  Image,
-  Play,
-  Clock,
-  Loader,
-  CheckCircle,
-  XCircle,
-  Plus,
-  Upload,
+  Wand2,
+  Save,
+  Lightbulb,
+  Copy as CopyIcon,
+  Clapperboard,
+  FileText,
+  Sparkles,
+  Scissors,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
-import { videoApi } from '../api';
-import type { VideoTask } from '../types';
+import { videoApi, notesApi } from '../api';
 import { useToast, showApiError } from '../components/Toast';
 
-type TabType = 'text-to-video' | 'image-to-video';
+type AssistType = 'script' | 'storyboard' | 'copy' | 'plan';
+
+const ASSIST_TYPES: { key: AssistType; label: string; icon: any; desc: string }[] = [
+  { key: 'script', label: '视频脚本', icon: Clapperboard, desc: '开场白+正文+结尾+完整台词' },
+  { key: 'storyboard', label: '分镜脚本', icon: Video, desc: '场景/景别/画面/台词/运镜' },
+  { key: 'copy', label: '口播文案', icon: FileText, desc: '口播稿+字幕+标题+标签' },
+  { key: 'plan', label: '完整策划', icon: Sparkles, desc: '定位+脚本+分镜+发布建议' },
+];
+
+const EXAMPLE_TOPICS = [
+  '如何用手机拍出电影感Vlog',
+  '3分钟讲清楚什么是AI绘画',
+  '新手第一次创业失败经验分享',
+  '城市夜景氛围感大片',
+];
 
 function VideoPage() {
   const toast = useToast();
-  const [activeTab, setActiveTab] = useState<TabType>('text-to-video');
-  const [tasks, setTasks] = useState<VideoTask[]>([]);
-  const [prompt, setPrompt] = useState('');
-  const [duration, setDuration] = useState(5);
-  const [ratio, setRatio] = useState('16:9');
-  const [resolution, setResolution] = useState('720p');
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [assistType, setAssistType] = useState<AssistType>('script');
+  const [topic, setTopic] = useState('');
   const [generating, setGenerating] = useState(false);
+  const [result, setResult] = useState('');
+  const esRef = useRef<any>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
+  const [showToolsGuide, setShowToolsGuide] = useState(true);
 
   useEffect(() => {
-    loadTasks();
+    return () => {
+      if (esRef.current) esRef.current.close();
+    };
   }, []);
 
-  const loadTasks = async () => {
-    try {
-      setLoading(true);
-      const res = await videoApi.getTasks();
-      setTasks(res.tasks);
-    } catch (error) {
-      console.error('Failed to load video tasks:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleGenerate = async () => {
-    if (!prompt.trim()) return;
+    if (!topic.trim() || generating) return;
+    setGenerating(true);
+    setResult('');
+
     try {
-      setGenerating(true);
-      let res;
-      if (activeTab === 'text-to-video') {
-        res = await videoApi.textToVideo({
-          prompt: prompt.trim(),
-          duration,
-          ratio,
-          resolution,
-        });
-      } else {
-        res = await videoApi.imageToVideo({
-          prompt: prompt.trim(),
-          image_url: selectedImage || '',
-          duration,
-          ratio,
-          resolution,
-        });
-      }
-      setTasks([res.task, ...tasks]);
-      setPrompt('');
-      setSelectedImage(null);
+      const es = videoApi.assistStream({ topic: topic.trim(), type: assistType });
+      esRef.current = es;
+
+      es.onmessage = (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.error) {
+            showApiError({ error: data.error, message: data.message }, toast);
+            setGenerating(false);
+            es.close();
+            return;
+          }
+          if (data.content) {
+            setResult((prev) => prev + data.content);
+          }
+          if (data.done) {
+            setGenerating(false);
+            es.close();
+            toast.success('生成完成');
+          }
+        } catch (err) {
+          console.error('Parse error:', err);
+        }
+      };
+
+      es.onerror = () => {
+        setGenerating(false);
+        toast.error('连接失败，请检查网络或 API 配置');
+        es.close();
+      };
     } catch (error: any) {
-      console.error('Failed to create video task:', error);
       showApiError(error, toast);
-    } finally {
       setGenerating(false);
     }
   };
 
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setSelectedImage(e.target?.result as string);
-      };
-      reader.readAsDataURL(file);
+  const handleCopy = async () => {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result);
+      toast.success('已复制到剪贴板');
+    } catch {
+      toast.error('复制失败');
     }
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return 'text-green-400 bg-green-500/10';
-      case 'running':
-      case 'queued':
-        return 'text-blue-400 bg-blue-500/10';
-      case 'failed':
-        return 'text-red-400 bg-red-500/10';
-      default:
-        return 'text-gray-400 bg-gray-500/10';
+  const handleSaveAsNote = async () => {
+    if (!result) return;
+    try {
+      const title = topic.trim().slice(0, 30) || '视频创作';
+      const typeLabel = ASSIST_TYPES.find((t) => t.key === assistType)?.label || '创作';
+      const noteContent = `# ${title} - ${typeLabel}\n\n> 主题：${topic}\n\n---\n\n${result}\n\n---\n\n_来自 IMA 工作台 - 视频创作助手生成`;
+      await notesApi.createNote({
+        title: `${title} - ${typeLabel}`,
+        content: noteContent,
+        tags: ['视频创作', typeLabel],
+      });
+      toast.success('已保存为笔记');
+    } catch (error) {
+      showApiError(error, toast);
     }
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return <CheckCircle size={14} />;
-      case 'running':
-      case 'queued':
-        return <Loader size={14} className="animate-spin" />;
-      case 'failed':
-        return <XCircle size={14} />;
-      default:
-        return <Clock size={14} />;
-    }
-  };
-
-  const getStatusText = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return '已完成';
-      case 'running':
-        return '生成中';
-      case 'queued':
-        return '排队中';
-      case 'failed':
-        return '失败';
-      default:
-        return status;
-    }
-  };
-
-  const formatDate = (dateStr: string) => {
-    return new Date(dateStr).toLocaleString('zh-CN', {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
+  const currentTypeInfo = ASSIST_TYPES.find((t) => t.key === assistType);
+  const TypeIcon = currentTypeInfo?.icon;
 
   return (
-    <div className="h-full flex">
-      {/* Left panel - Generator */}
-      <div className="w-96 h-full border-r border-[var(--color-border)] flex flex-col bg-[var(--color-sidebar-bg)]">
-        <div className="p-6 border-b border-[var(--color-border)]">
-          <h2 className="text-lg font-semibold text-white mb-4">视频生成</h2>
-
-          {/* Tabs */}
-          <div className="flex bg-[var(--color-main-bg)] rounded-lg p-1">
-            <button
-              onClick={() => setActiveTab('text-to-video')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-medium transition-colors ${
-                activeTab === 'text-to-video'
-                  ? 'bg-[var(--color-primary)] text-white'
-                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
-              }`}
-            >
-              <Video size={16} />
-              文生视频
-            </button>
-            <button
-              onClick={() => setActiveTab('image-to-video')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-md text-sm font-medium transition-colors ${
-                activeTab === 'image-to-video'
-                  ? 'bg-[var(--color-primary)] text-white'
-                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'
-              }`}
-            >
-              <Image size={16} />
-              图生视频
-            </button>
+    <div className="h-full flex flex-col bg-[var(--color-main-bg)]">
+      {/* Header */}
+      <div className="px-6 py-4 border-b border-[var(--color-border)] flex items-center justify-between bg-[var(--color-card-bg)]">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 text-white">
+            <Wand2 size={20} />
           </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-6 space-y-5">
-          {/* Image upload for image-to-video */}
-          {activeTab === 'image-to-video' && (
-            <div>
-              <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
-                参考图片
-              </label>
-              {selectedImage ? (
-                <div className="relative">
-                  <img
-                    src={selectedImage}
-                    alt="Selected"
-                    className="w-full aspect-video object-cover rounded-lg"
-                  />
-                  <button
-                    onClick={() => setSelectedImage(null)}
-                    className="absolute top-2 right-2 p-1.5 bg-black/60 hover:bg-black/80 rounded-full transition-colors"
-                  >
-                    <XCircle size={16} className="text-white" />
-                  </button>
-                </div>
-              ) : (
-                <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-[var(--color-border)] rounded-lg cursor-pointer hover:border-[var(--color-primary)] transition-colors">
-                  <Upload size={28} className="text-[var(--color-text-muted)] mb-2" />
-                  <span className="text-sm text-[var(--color-text-muted)]">点击上传图片</span>
-                  <span className="text-xs text-[var(--color-text-muted)] mt-1">
-                    支持 JPG、PNG 格式
-                  </span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageSelect}
-                    className="hidden"
-                  />
-                </label>
-              )}
-            </div>
-          )}
-
-          {/* Prompt */}
           <div>
-            <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
-              描述提示词
-            </label>
-            <textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="描述你想要生成的视频内容..."
-              rows={5}
-              className="w-full px-4 py-3 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-sm text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] outline-none focus:border-[var(--color-primary)] resize-none"
-            />
-            <p className="text-xs text-[var(--color-text-muted)] mt-2">
-              提示越详细，生成效果越好
+            <h1 className="text-lg font-semibold text-white">视频创作助手</h1>
+            <p className="text-xs text-[var(--color-text-muted)]">
+              AI 帮你写脚本、分镜、文案，一键复制到剪辑软件即可制作
             </p>
           </div>
-
-          {/* Duration */}
-          <div>
-            <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
-              视频时长
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {[3, 5, 10].map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setDuration(d)}
-                  className={`py-2 rounded-lg text-sm transition-colors ${
-                    duration === d
-                      ? 'bg-[var(--color-primary)] text-white'
-                      : 'bg-[var(--color-main-bg)] border border-[var(--color-border)] text-[var(--color-text-primary)] hover:border-[var(--color-primary)]'
-                  }`}
-                >
-                  {d} 秒
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Ratio */}
-          <div>
-            <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
-              画面比例
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {['16:9', '9:16', '1:1'].map((r) => (
-                <button
-                  key={r}
-                  onClick={() => setRatio(r)}
-                  className={`py-2 rounded-lg text-sm transition-colors ${
-                    ratio === r
-                      ? 'bg-[var(--color-primary)] text-white'
-                      : 'bg-[var(--color-main-bg)] border border-[var(--color-border)] text-[var(--color-text-primary)] hover:border-[var(--color-primary)]'
-                  }`}
-                >
-                  {r}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Resolution */}
-          <div>
-            <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
-              分辨率
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              {['480p', '720p', '1080p', '4K'].map((r) => (
-                <button
-                  key={r}
-                  onClick={() => setResolution(r)}
-                  className={`py-2 rounded-lg text-sm transition-colors ${
-                    resolution === r
-                      ? 'bg-[var(--color-primary)] text-white'
-                      : 'bg-[var(--color-main-bg)] border border-[var(--color-border)] text-[var(--color-text-primary)] hover:border-[var(--color-primary)]'
-                  }`}
-                >
-                  {r}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Generate button */}
-        <div className="p-4 border-t border-[var(--color-border)]">
-          <button
-            onClick={handleGenerate}
-            disabled={!prompt.trim() || generating || (activeTab === 'image-to-video' && !selectedImage)}
-            className="w-full flex items-center justify-center gap-2 py-3 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-medium"
-          >
-            {generating ? (
-              <>
-                <Loader size={18} className="animate-spin" />
-                生成中...
-              </>
-            ) : (
-              <>
-                <Plus size={18} />
-                生成视频
-              </>
-            )}
-          </button>
         </div>
       </div>
 
-      {/* Right panel - Task list */}
-      <div className="flex-1 flex flex-col">
-        <div className="h-14 border-b border-[var(--color-border)] flex items-center justify-between px-6">
-          <h2 className="text-base font-medium text-white">历史任务</h2>
-          <span className="text-sm text-[var(--color-text-muted)]">
-            共 {tasks.length} 个任务
-          </span>
-        </div>
+      <div className="flex-1 flex overflow-hidden">
+        {/* Left panel - Input */}
+        <div className="w-[420px] h-full border-r border-[var(--color-border)] flex flex-col bg-[var(--color-sidebar-bg)] overflow-y-auto">
+          <div className="p-6 space-y-5">
+            {/* Creation Type */}
+            <div>
+              <label className="block text-sm font-medium text-[var(--color-text-secondary)] mb-3">
+                选择创作类型
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {ASSIST_TYPES.map((type) => {
+                  const Icon = type.icon;
+                  const active = assistType === type.key;
+                  return (
+                    <button
+                      key={type.key}
+                      onClick={() => setAssistType(type.key)}
+                      className={`p-3 rounded-lg border text-left transition-all ${
+                        active
+                          ? 'border-[var(--color-primary)] bg-[var(--color-primary)]/10 ring-1 ring-[var(--color-primary)]/30'
+                          : 'border-[var(--color-border)] hover:border-[var(--color-primary)]/30'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <Icon
+                          size={16}
+                          className={active ? 'text-[var(--color-primary)]' : 'text-[var(--color-text-muted)]'}
+                        />
+                        <span className={`text-sm font-medium ${active ? 'text-white' : 'text-[var(--color-text-primary)]'}`}>
+                          {type.label}
+                        </span>
+                      </div>
+                      <p className="text-xs text-[var(--color-text-muted)] line-clamp-1">{type.desc}</p>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
-        <div className="flex-1 overflow-y-auto p-6">
-          {loading ? (
-            <div className="text-center py-16 text-[var(--color-text-muted)]">加载中...</div>
-          ) : tasks.length === 0 ? (
-            <div className="text-center py-16">
-              <Video size={40} className="mx-auto text-[var(--color-text-muted)] mb-4 opacity-50" />
-              <p className="text-[var(--color-text-secondary)] mb-2">暂无视频任务</p>
-              <p className="text-sm text-[var(--color-text-muted)]">
-                在左侧填写提示词，开始生成你的第一个视频
+            {/* Topic Input */}
+            <div>
+              <label className="block text-sm font-medium text-[var(--color-text-secondary)] mb-2">
+                视频主题 / 创意描述
+              </label>
+              <textarea
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                placeholder={`例如：${EXAMPLE_TOPICS[0]}`}
+                rows={6}
+                className="w-full px-4 py-3 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white text-sm resize-none focus:outline-none focus:border-[var(--color-primary)]/50 placeholder:text-[var(--color-text-muted)]"
+              />
+            </div>
+
+            {/* Quick examples */}
+            <div>
+              <p className="text-xs text-[var(--color-text-muted)] mb-2 flex items-center gap-1">
+                <Lightbulb size={12} />
+                试试这些主题
               </p>
+              <div className="flex flex-wrap gap-2">
+                {EXAMPLE_TOPICS.map((ex, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setTopic(ex)}
+                    className="px-3 py-1.5 text-xs bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-full text-[var(--color-text-secondary)] hover:border-[var(--color-primary)]/50 hover:text-[var(--color-primary)] transition-colors"
+                  >
+                    {ex.length > 14 ? ex.slice(0, 14) + '...' : ex}
+                  </button>
+                ))}
+              </div>
             </div>
-          ) : (
-            <div className="grid grid-cols-2 xl:grid-cols-3 gap-4">
-              {tasks.map((task) => (
-                <div
-                  key={task.id}
-                  className="bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-xl overflow-hidden hover:border-[var(--color-primary)]/50 transition-colors"
-                >
-                  {/* Video preview */}
-                  <div className="relative aspect-video bg-[var(--color-main-bg)]">
-                    {task.video_url ? (
-                      <video
-                        src={task.video_url}
-                        poster={task.thumbnail_url}
-                        className="w-full h-full object-cover"
-                        controls
-                      />
-                    ) : task.status === 'running' || task.status === 'queued' ? (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center">
-                        <Loader size={32} className="text-blue-400 animate-spin mb-2" />
-                        <span className="text-sm text-[var(--color-text-muted)]">生成中...</span>
-                      </div>
-                    ) : task.status === 'failed' ? (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center">
-                        <XCircle size={32} className="text-red-400 mb-2" />
-                        <span className="text-sm text-red-400">生成失败</span>
-                      </div>
-                    ) : (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <Video size={32} className="text-[var(--color-text-muted)] opacity-50" />
-                      </div>
-                    )}
 
-                    {task.video_url && (
-                      <div className="absolute bottom-2 right-2">
-                        <button className="p-2 bg-black/60 hover:bg-black/80 rounded-full transition-colors">
-                          <Play size={16} className="text-white" />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Info */}
-                  <div className="p-4">
-                    <p className="text-sm text-[var(--color-text-primary)] line-clamp-2 h-10 mb-2">
-                      {task.prompt}
-                    </p>
-                    <div className="flex items-center justify-between">
-                      <span
-                        className={`text-xs px-2 py-1 rounded-full flex items-center gap-1 ${getStatusColor(
-                          task.status
-                        )}`}
-                      >
-                        {getStatusIcon(task.status)}
-                        {getStatusText(task.status)}
-                      </span>
-                      <span className="text-xs text-[var(--color-text-muted)]">
-                        {formatDate(task.created_at)}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-3 mt-2 text-xs text-[var(--color-text-muted)]">
-                      <span>{task.duration}s</span>
-                      <span>·</span>
-                      <span>{task.ratio}</span>
-                      <span>·</span>
-                      <span>{task.resolution}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+            {/* Generate button */}
+            <button
+              onClick={handleGenerate}
+              disabled={!topic.trim() || generating}
+              className="w-full py-3 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-medium text-sm hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {generating ? (
+                <>
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    />
+                  </svg>
+                  生成中...
+                </>
+              ) : (
+                <>
+                  <Wand2 size={16} />
+                  开始生成
+                </>
+              )}
+            </button>
+          </div>
         </div>
+
+        {/* Right panel - Result */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Result header */}
+          <div className="px-6 py-3 border-b border-[var(--color-border)] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {TypeIcon && <TypeIcon size={16} className="text-[var(--color-primary)]" />}
+              <span className="text-sm font-medium text-white">{currentTypeInfo?.label}</span>
+              {generating && (
+                <span className="text-xs text-[var(--color-text-muted)] ml-2">（正在生成...）</span>
+              )}
+            </div>
+            {result && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleCopy}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:text-white bg-[var(--color-sidebar-bg)] hover:bg-[var(--color-hover-bg)] rounded-md transition-colors border border-[var(--color-border)]"
+                >
+                  <CopyIcon size={14} />
+                  复制
+                </button>
+                <button
+                  onClick={handleSaveAsNote}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:text-white bg-[var(--color-sidebar-bg)] hover:bg-[var(--color-hover-bg)] rounded-md transition-colors border border-[var(--color-border)]"
+                >
+                  <Save size={14} />
+                  保存为笔记
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Result content */}
+          <div ref={resultRef} className="flex-1 overflow-y-auto p-6">
+            {result ? (
+              <div className="text-[var(--color-text-primary)] text-sm leading-relaxed whitespace-pre-wrap break-words">
+                {result}
+                {generating && (
+                  <span className="inline-block w-2 h-4 ml-1 bg-[var(--color-primary)] animate-pulse align-middle" />
+                )}
+              </div>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-center px-8">
+                <div className="p-4 rounded-full bg-[var(--color-sidebar-bg)] mb-4">
+                  <Wand2 size={32} className="text-[var(--color-text-muted)]" />
+                </div>
+                <h3 className="text-lg font-medium text-white mb-2">开始你的视频创作</h3>
+                <p className="text-sm text-[var(--color-text-muted)] max-w-md">
+                  在左侧输入视频主题，选择创作类型，AI 将为你生成专业的脚本、分镜或文案
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Tools guide */}
+      <div className="border-t border-[var(--color-border)] bg-[var(--color-card-bg)]">
+        <button
+          onClick={() => setShowToolsGuide(!showToolsGuide)}
+          className="w-full px-6 py-3 flex items-center justify-between text-left hover:bg-[var(--color-hover-bg)]/30 transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <Scissors size={16} className="text-[var(--color-primary)]" />
+            <span className="text-sm font-medium text-white">第三方剪辑工具推荐</span>
+            <span className="text-xs text-[var(--color-text-muted)]">
+              把上面生成的脚本/分镜复制后，用这些工具完成视频制作
+            </span>
+          </div>
+          {showToolsGuide ? (
+            <ChevronUp size={16} className="text-[var(--color-text-muted)]" />
+          ) : (
+            <ChevronDown size={16} className="text-[var(--color-text-muted)]" />
+          )}
+        </button>
+        {showToolsGuide && (
+          <div className="px-6 pb-5 grid grid-cols-3 gap-4">
+            {[
+              { name: '剪映', desc: '新手友好，模板多，免费够用', tag: '推荐新手' },
+              { name: 'Premiere Pro', desc: '专业级剪辑，功能全面', tag: '进阶' },
+              { name: 'DaVinci Resolve（达芬奇）', desc: '调色强，免费版够用', tag: '调色' },
+            ].map((tool, i) => (
+              <div key={i} className="p-4 bg-[var(--color-main-bg)] rounded-lg border border-[var(--color-border)]">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-white">{tool.name}</span>
+                  <span className="text-xs px-2 py-0.5 bg-[var(--color-primary)]/10 text-[var(--color-primary)] rounded-full">
+                    {tool.tag}
+                  </span>
+                </div>
+                <p className="text-xs text-[var(--color-text-muted)]">{tool.desc}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

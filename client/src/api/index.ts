@@ -195,6 +195,19 @@ export const videoApi = {
     }),
   deleteTask: (id: string) =>
     request<{ success: boolean }>(`/video/tasks/${id}`, { method: 'DELETE' }),
+  assistStream: (options: { topic: string; type: string }) =>
+    new EventSourcePolyfill(`${API_BASE}/video/assist/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(options),
+    }),
+  assist: (data: { topic: string; type: string }) =>
+    request<{ content: string; type: string }>('/video/assist', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 };
 
 // Search APIs
