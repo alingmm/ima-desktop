@@ -76,7 +76,10 @@ export interface DocumentRecord {
   content_preview?: string;
   chunk_count?: number;
   status?: string;
+  error_code?: string | null;
+  error_message?: string | null;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface DocumentChunkRecord {

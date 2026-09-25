@@ -167,21 +167,23 @@ router.post('/bases/:id/upload', authMiddleware, upload.single('file'), async (r
     // Generate embeddings for chunks
     const embeddings: (number[] | null)[] = [];
     const limitedChunks = chunks.slice(0, 50);
+    let embeddingFailed = false;
+    let embeddingErrorCode: string | null = null;
+    let embeddingErrorMessage: string | null = null;
 
     for (const chunk of limitedChunks) {
       try {
         const embedding = await createEmbedding(chunk);
         embeddings.push(embedding);
       } catch (e: any) {
-        if (e.code === API_ERRORS.API_KEY_NOT_CONFIGURED) {
-          // 没有配置API Key，全部不向量化
-          for (let i = embeddings.length; i < limitedChunks.length; i++) {
-            embeddings.push(null);
-          }
-          break;
+        embeddingFailed = true;
+        embeddingErrorCode = e.code || 'EMBEDDING_ERROR';
+        embeddingErrorMessage = e.message || '向量生成失败';
+        // 所有剩余的都设为 null
+        for (let i = embeddings.length; i < limitedChunks.length; i++) {
+          embeddings.push(null);
         }
-        console.error('Embedding error:', e);
-        embeddings.push(null);
+        break;
       }
     }
 
@@ -189,6 +191,7 @@ router.post('/bases/:id/upload', authMiddleware, upload.single('file'), async (r
     const now = new Date().toISOString();
 
     // Save document record
+    const finalStatus = embeddingFailed ? 'failed' : 'processed';
     const doc = insertOne('documents', {
       id: docId,
       knowledge_base_id: baseId,
@@ -197,7 +200,9 @@ router.post('/bases/:id/upload', authMiddleware, upload.single('file'), async (r
       file_size: file.size,
       content_preview: content.slice(0, 500),
       chunk_count: chunks.length,
-      status: 'processed',
+      status: finalStatus,
+      error_code: embeddingErrorCode,
+      error_message: embeddingErrorMessage,
       created_at: now,
     } as DocumentRecord);
 
@@ -223,7 +228,18 @@ router.post('/bases/:id/upload', authMiddleware, upload.single('file'), async (r
       // ignore
     }
 
-    res.json({ document: doc, chunks_processed: chunkRecords.length });
+    if (embeddingFailed) {
+      res.status(400).json({
+        error: embeddingErrorCode,
+        message: embeddingErrorMessage + '（文档已保存但未向量化，配置 API Key 后可重新向量化）',
+        document: doc,
+        chunks_processed: chunkRecords.length,
+        embedding_ready: false,
+      });
+      return;
+    }
+
+    res.json({ document: doc, chunks_processed: chunkRecords.length, embedding_ready: true });
   } catch (error: any) {
     console.error('Upload error:', error);
     res.status(500).json({ error: 'Failed to upload document', message: error.message });
@@ -263,39 +279,46 @@ router.post('/bases/:id/query', authMiddleware, async (req: AuthRequest, res) =>
     // 2. 生成 query embedding 并检索
     let relevantChunks: Array<{ content: string; document_id: string; similarity: number }> = [];
 
-    try {
-      const queryEmbedding = await createEmbedding(query);
-      const withSimilarity = allChunks
-        .filter((c) => c.embedding && Array.isArray(c.embedding))
-        .map((c) => ({
-          content: c.content,
-          document_id: c.document_id,
-          similarity: cosineSimilarity(queryEmbedding, c.embedding!),
-        }))
-        .filter((c) => c.similarity >= 0.5)
-        .sort((a, b) => b.similarity - a.similarity)
-        .slice(0, top_k);
-      relevantChunks = withSimilarity;
-    } catch (embErr: any) {
-      console.warn('RAG embedding search failed, falling back to keyword search:', embErr.message);
-      // fallback: 关键词匹配
-      const keywords = query.toLowerCase().split(/\s+/).filter(Boolean);
-      const scored = allChunks.map((c) => {
-        const lower = c.content.toLowerCase();
-        let score = 0;
-        for (const kw of keywords) {
-          if (lower.includes(kw)) score++;
-        }
-        return { content: c.content, document_id: c.document_id, similarity: score / Math.max(keywords.length, 1) };
+    const allChunksWithEmbedding = allChunks.filter(
+      (c) => c.embedding && Array.isArray(c.embedding) && c.embedding.length > 0,
+    );
+
+    if (allChunksWithEmbedding.length === 0) {
+      // 知识库中没有向量化的文档（可能未配置 embedding）
+      res.status(400).json({
+        error: 'EMBEDDING_NOT_CONFIGURED',
+        message: '知识库中没有可检索的向量化文档，请先在设置页配置 Embedding API Key，或重新上传文档以触发向量化',
       });
-      relevantChunks = scored
-        .filter((c) => c.similarity > 0)
-        .sort((a, b) => b.similarity - a.similarity)
-        .slice(0, top_k);
+      return;
     }
+
+    let queryEmbedding: number[];
+    try {
+      queryEmbedding = await createEmbedding(query);
+    } catch (embErr: any) {
+      res.status(400).json({
+        error: embErr.code === API_ERRORS.API_KEY_NOT_CONFIGURED
+          ? 'API_KEY_NOT_CONFIGURED'
+          : 'EMBEDDING_ERROR',
+        message: embErr.message || '向量检索失败，请检查 API Key 配置',
+      });
+      return;
+    }
+
+    const withSimilarity = allChunksWithEmbedding
+      .map((c) => ({
+        content: c.content,
+        document_id: c.document_id,
+        similarity: cosineSimilarity(queryEmbedding, c.embedding!),
+      }))
+      .filter((c) => c.similarity >= 0.5)
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, top_k);
+    relevantChunks = withSimilarity;
 
     // 3. Generate answer using LLM with context
     let answer: string | null = null;
+    let llmError: string | null = null;
     if (relevantChunks.length > 0) {
       const context = relevantChunks.map((c, i) => `[${i + 1}] ${c.content}`).join('\n\n');
       const systemPrompt = `你是一个知识库助手。请基于以下参考资料回答用户的问题。
@@ -314,14 +337,14 @@ ${context}`;
         );
         answer = response.content;
       } catch (llmErr: any) {
-        console.error('RAG LLM error:', llmErr.message);
-        // 如果 LLM 不可用，只返回相关片段
+        llmError = llmErr.message || '大模型调用失败';
       }
     }
 
     res.json({
       results: relevantChunks,
       answer,
+      llm_error: llmError,
     });
   } catch (error: any) {
     console.error('RAG query error:', error);
@@ -342,33 +365,40 @@ router.post('/bases/:id/search/stream', authMiddleware, async (req: AuthRequest,
 
     const allChunks = selectWhere('document_chunks', { knowledge_base_id: baseId } as Partial<DocumentChunkRecord>);
 
-    let relevantChunks: Array<{ content: string; document_id: string; similarity: number }> = [];
-    try {
-      const queryEmbedding = await createEmbedding(query);
-      relevantChunks = allChunks
-        .filter((c) => c.embedding && Array.isArray(c.embedding))
-        .map((c) => ({
-          content: c.content,
-          document_id: c.document_id,
-          similarity: cosineSimilarity(queryEmbedding, c.embedding!),
-        }))
-        .filter((c) => c.similarity >= 0.5)
-        .sort((a, b) => b.similarity - a.similarity)
-        .slice(0, top_k);
-    } catch {
-      // fallback keyword
-      const keywords = query.toLowerCase().split(/\s+/).filter(Boolean);
-      relevantChunks = allChunks
-        .map((c) => {
-          const lower = c.content.toLowerCase();
-          let score = 0;
-          for (const kw of keywords) if (lower.includes(kw)) score++;
-          return { content: c.content, document_id: c.document_id, similarity: score / Math.max(keywords.length, 1) };
-        })
-        .filter((c) => c.similarity > 0)
-        .sort((a, b) => b.similarity - a.similarity)
-        .slice(0, top_k);
+    const allChunksWithEmbedding = allChunks.filter(
+      (c) => c.embedding && Array.isArray(c.embedding) && c.embedding.length > 0,
+    );
+
+    if (allChunksWithEmbedding.length === 0) {
+      res.status(400).json({
+        error: 'EMBEDDING_NOT_CONFIGURED',
+        message: '知识库中没有可检索的向量化文档，请先在设置页配置 Embedding API Key，或重新上传文档以触发向量化',
+      });
+      return;
     }
+
+    let queryEmbedding: number[];
+    try {
+      queryEmbedding = await createEmbedding(query);
+    } catch (embErr: any) {
+      res.status(400).json({
+        error: embErr.code === API_ERRORS.API_KEY_NOT_CONFIGURED
+          ? 'API_KEY_NOT_CONFIGURED'
+          : 'EMBEDDING_ERROR',
+        message: embErr.message || '向量检索失败，请检查 API Key 配置',
+      });
+      return;
+    }
+
+    const relevantChunks = allChunksWithEmbedding
+      .map((c) => ({
+        content: c.content,
+        document_id: c.document_id,
+        similarity: cosineSimilarity(queryEmbedding, c.embedding!),
+      }))
+      .filter((c) => c.similarity >= 0.5)
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, top_k);
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -560,25 +590,34 @@ router.post('/add-from-url', authMiddleware, async (req: AuthRequest, res) => {
     const now = new Date().toISOString();
     const chunks = splitTextIntoChunks(pageContent, 800);
 
-    const doc = insertOne('documents', {
-      id: docId,
-      knowledge_base_id: baseId,
-      filename: pageTitle || url,
-      file_path: url,
-      content_preview: pageContent.slice(0, 500),
-      chunk_count: chunks.length,
-      status: 'processed',
-      created_at: now,
-    } as DocumentRecord);
-
     // 生成 embeddings
     const chunkRecords: DocumentChunkRecord[] = [];
-    for (let i = 0; i < Math.min(chunks.length, 50); i++) {
+    let embeddingFailed = false;
+    let embeddingErrorCode: string | null = null;
+    let embeddingErrorMessage: string | null = null;
+    const limitedCount = Math.min(chunks.length, 50);
+
+    for (let i = 0; i < limitedCount; i++) {
       let embedding: number[] | null = null;
       try {
         embedding = await createEmbedding(chunks[i]);
-      } catch {
-        // ignore
+      } catch (e: any) {
+        embeddingFailed = true;
+        embeddingErrorCode = e.code || 'EMBEDDING_ERROR';
+        embeddingErrorMessage = e.message || '向量生成失败';
+        // 剩余的全部用 null
+        for (let j = i; j < limitedCount; j++) {
+          chunkRecords.push({
+            id: uuidv4(),
+            document_id: docId,
+            knowledge_base_id: baseId,
+            chunk_index: j,
+            content: chunks[j],
+            embedding: null,
+            created_at: now,
+          });
+        }
+        break;
       }
       chunkRecords.push({
         id: uuidv4(),
@@ -590,11 +629,37 @@ router.post('/add-from-url', authMiddleware, async (req: AuthRequest, res) => {
         created_at: now,
       });
     }
+
     if (chunkRecords.length > 0) {
       insertMany('document_chunks', chunkRecords);
     }
 
-    res.json({ document: doc, chunks_processed: chunkRecords.length });
+    const finalStatus = embeddingFailed ? 'failed' : 'processed';
+    const doc = insertOne('documents', {
+      id: docId,
+      knowledge_base_id: baseId,
+      filename: pageTitle || url,
+      file_path: url,
+      content_preview: pageContent.slice(0, 500),
+      chunk_count: chunks.length,
+      status: finalStatus,
+      error_code: embeddingErrorCode,
+      error_message: embeddingErrorMessage,
+      created_at: now,
+    } as DocumentRecord);
+
+    if (embeddingFailed) {
+      res.status(400).json({
+        error: embeddingErrorCode,
+        message: embeddingErrorMessage + '（网页已保存但未向量化，配置 API Key 后可重新向量化）',
+        document: doc,
+        chunks_processed: chunkRecords.length,
+        embedding_ready: false,
+      });
+      return;
+    }
+
+    res.json({ document: doc, chunks_processed: chunkRecords.length, embedding_ready: true });
   } catch (error: any) {
     console.error('Add from URL error:', error);
     res.status(500).json({ error: 'Failed to add from URL', message: error.message });
