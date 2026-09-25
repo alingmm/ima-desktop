@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import {
   selectWhere, insertOne, findById, updateById, deleteWhere, orderBy,
-  NoteRecord,
+  NoteRecord, DocumentRecord, DocumentChunkRecord,
 } from '../storage/json-storage';
 
 const router: import('express').Router = Router();
@@ -184,6 +184,51 @@ router.post('/batch-delete', authMiddleware, async (req: AuthRequest, res) => {
   } catch (err: any) {
     console.error('Batch delete error:', err);
     res.status(500).json({ error: 'Failed to batch delete notes', message: err.message });
+  }
+});
+
+// Create note from knowledge document
+router.post('/from-document', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { document_id } = req.body;
+
+    if (!document_id) {
+      res.status(400).json({ error: 'document_id is required' });
+      return;
+    }
+
+    const doc = findById('documents', document_id) as DocumentRecord | undefined;
+    if (!doc || doc.user_id !== req.userId) {
+      res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+
+    // Concatenate all chunks to build the content
+    const chunks = selectWhere(
+      'document_chunks',
+      { document_id } as Partial<DocumentChunkRecord>
+    ).sort((a: any, b: any) => a.chunk_index - b.chunk_index);
+
+    const content = chunks.map((c: DocumentChunkRecord) => c.content).join('\n\n');
+
+    // Build title and content with source reference
+    const title = doc.filename?.replace(/\.[^/.]+$/, '') || '从知识库导入的文档';
+    const sourceNote = `\n\n---\n> 来源：知识库文档 - ${doc.filename}`;
+
+    const note = insertOne('notes', {
+      id: uuidv4(),
+      user_id: req.userId,
+      title,
+      content: content + sourceNote,
+      tags: ['知识库'],
+      is_pinned: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as NoteRecord);
+
+    res.status(201).json({ note });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to create note from document', message: err.message });
   }
 });
 

@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import {
   selectWhere, insertOne, updateOne, deleteWhere, orderBy, selectOne, insertMany,
+  findById, updateById,
   KnowledgeBaseRecord, DocumentRecord, DocumentChunkRecord,
   KnowledgeShareRecord, KnowledgeCollaboratorRecord,
 } from '../storage/json-storage';
@@ -259,6 +260,228 @@ router.delete('/documents/:id', authMiddleware, async (req: AuthRequest, res) =>
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to delete document', message: error.message });
+  }
+});
+
+// Get document full content (concatenate all chunks)
+router.get('/documents/:id/content', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params;
+    const doc = findById('documents', id) as DocumentRecord | undefined;
+    if (!doc || doc.user_id !== req.userId) {
+      res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+    const rawChunks = selectWhere('document_chunks', { document_id: id } as Partial<DocumentChunkRecord>);
+    const chunks = orderBy(rawChunks as DocumentChunkRecord[], 'chunk_index', 'asc');
+    const content = chunks.map((c) => c.content).join('\n\n');
+    res.json({ content, filename: doc.filename, chunk_count: chunks.length });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to get document content', message: error.message });
+  }
+});
+
+// Update document content (re-chunk + re-embed)
+router.patch('/documents/:id', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params;
+    const { content, filename } = req.body;
+
+    const doc = findById('documents', id) as DocumentRecord | undefined;
+    if (!doc || doc.user_id !== req.userId) {
+      res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+
+    if (typeof content !== 'string' || content.trim().length === 0) {
+      res.status(400).json({ error: 'Content is required' });
+      return;
+    }
+
+    // 1. Remove old chunks
+    deleteWhere('document_chunks', { document_id: id } as Partial<DocumentChunkRecord>);
+
+    // 2. Re-chunk
+    const textChunks = splitTextIntoChunks(content, 800);
+
+    // 3. Try embedding
+    let embeddingReady = false;
+    let embedError: string | null = null;
+    let embedErrorCode: string | null = null;
+    const embeddings: (number[] | null)[] = new Array(textChunks.length).fill(null);
+
+    try {
+      for (let i = 0; i < textChunks.length; i++) {
+        embeddings[i] = await createEmbedding(textChunks[i]);
+      }
+      textChunks.forEach((text, index) => {
+        insertOne('document_chunks', {
+          id: uuidv4(),
+          document_id: id,
+          knowledge_base_id: doc.knowledge_base_id,
+          user_id: req.userId,
+          chunk_index: index,
+          content: text,
+          embedding: embeddings[index],
+          created_at: new Date().toISOString(),
+        } as DocumentChunkRecord);
+      });
+      embeddingReady = true;
+    } catch (embedErr: any) {
+      // Save chunks without embeddings, mark as failed
+      textChunks.forEach((text, index) => {
+        insertOne('document_chunks', {
+          id: uuidv4(),
+          document_id: id,
+          knowledge_base_id: doc.knowledge_base_id,
+          user_id: req.userId,
+          chunk_index: index,
+          content: text,
+          embedding: embeddings[index] || null,
+          created_at: new Date().toISOString(),
+        } as DocumentChunkRecord);
+      });
+      embedError = embedErr.message || 'Embedding failed';
+      embedErrorCode = embedErr.code || 'EMBEDDING_ERROR';
+    }
+
+    // 4. Update document metadata
+    const updatedDoc = updateById('documents', id, {
+      filename: filename || doc.filename,
+      chunk_count: textChunks.length,
+      file_size: Buffer.byteLength(content, 'utf8'),
+      status: embeddingReady ? 'completed' : 'failed',
+      error_code: embedErrorCode,
+      error_message: embedError,
+      updated_at: new Date().toISOString(),
+    } as Partial<DocumentRecord>);
+
+    if (!embeddingReady) {
+      res.status(400).json({
+        error: embedErrorCode,
+        message: `${embedError}（文档已保存但未向量化，配置 Embedding 后重新保存即可生效）`,
+        document: updatedDoc,
+        embedding_ready: false,
+      });
+      return;
+    }
+
+    res.json({ document: updatedDoc, embedding_ready: true, chunk_count: textChunks.length });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to update document', message: error.message });
+  }
+});
+
+// Import note as a knowledge document
+router.post('/bases/:id/import-note', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { id: baseId } = req.params;
+    const { note_id } = req.body;
+
+    const base = findById('knowledge_bases', baseId) as KnowledgeBaseRecord | undefined;
+    if (!base || base.user_id !== req.userId) {
+      res.status(404).json({ error: 'Knowledge base not found' });
+      return;
+    }
+
+    if (!note_id) {
+      res.status(400).json({ error: 'note_id is required' });
+      return;
+    }
+
+    const note = findById('notes', note_id) as any;
+    if (!note || note.user_id !== req.userId) {
+      res.status(404).json({ error: 'Note not found' });
+      return;
+    }
+
+    const content = note.content || '';
+    if (!content.trim()) {
+      res.status(400).json({ error: 'Note content is empty' });
+      return;
+    }
+
+    const docId = uuidv4();
+    const chunks = splitTextIntoChunks(content, 800);
+
+    // Insert document placeholder first
+    insertOne('documents', {
+      id: docId,
+      knowledge_base_id: baseId,
+      user_id: req.userId,
+      filename: note.title || '导入的笔记',
+      file_type: 'text/markdown',
+      file_size: Buffer.byteLength(content, 'utf8'),
+      chunk_count: chunks.length,
+      status: 'processing',
+      error_code: null,
+      error_message: null,
+      source: 'note',
+      source_note_id: note_id,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as DocumentRecord);
+
+    // Try embedding
+    let embeddingReady = false;
+    let embedError: string | null = null;
+    let embedErrorCode: string | null = null;
+    const embeddings: (number[] | null)[] = new Array(chunks.length).fill(null);
+
+    try {
+      for (let i = 0; i < chunks.length; i++) {
+        embeddings[i] = await createEmbedding(chunks[i]);
+      }
+      chunks.forEach((text, index) => {
+        insertOne('document_chunks', {
+          id: uuidv4(),
+          document_id: docId,
+          knowledge_base_id: baseId,
+          user_id: req.userId,
+          chunk_index: index,
+          content: text,
+          embedding: embeddings[index],
+          created_at: new Date().toISOString(),
+        } as DocumentChunkRecord);
+      });
+      embeddingReady = true;
+    } catch (embedErr: any) {
+      chunks.forEach((text, index) => {
+        insertOne('document_chunks', {
+          id: uuidv4(),
+          document_id: docId,
+          knowledge_base_id: baseId,
+          user_id: req.userId,
+          chunk_index: index,
+          content: text,
+          embedding: embeddings[index] || null,
+          created_at: new Date().toISOString(),
+        } as DocumentChunkRecord);
+      });
+      embedError = embedErr.message || 'Embedding failed';
+      embedErrorCode = embedErr.code || 'EMBEDDING_ERROR';
+    }
+
+    const finalDoc = updateById('documents', docId, {
+      status: embeddingReady ? 'completed' : 'failed',
+      error_code: embedErrorCode,
+      error_message: embedError,
+      updated_at: new Date().toISOString(),
+    } as Partial<DocumentRecord>);
+
+    if (!embeddingReady) {
+      res.status(400).json({
+        error: embedErrorCode,
+        message: `${embedError}（文档已导入但未向量化，配置 Embedding 后重新编辑保存即可生效）`,
+        document: finalDoc,
+        embedding_ready: false,
+      });
+      return;
+    }
+
+    res.status(201).json({ document: finalDoc, embedding_ready: true, chunk_count: chunks.length });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to import note', message: error.message });
   }
 });
 

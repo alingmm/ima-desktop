@@ -15,8 +15,11 @@ import {
   CheckCircle,
   AlertCircle,
   Loader,
+  Edit3,
+  Save,
+  BookmarkPlus,
 } from 'lucide-react';
-import { knowledgeApi } from '../api';
+import { knowledgeApi, notesApi } from '../api';
 import type { KnowledgeBase, Document } from '../types';
 import { useToast, showApiError } from '../components/Toast';
 
@@ -39,6 +42,93 @@ function KnowledgePage() {
   const [collaborators, setCollaborators] = useState<any[]>([]);
   const [shareLink, setShareLink] = useState('');
   const [copied, setCopied] = useState(false);
+
+  // Document editing
+  const [editingDoc, setEditingDoc] = useState<Document | null>(null);
+  const [editDocContent, setEditDocContent] = useState('');
+  const [editDocFilename, setEditDocFilename] = useState('');
+  const [isLoadingDocContent, setIsLoadingDocContent] = useState(false);
+  const [isSavingDoc, setIsSavingDoc] = useState(false);
+
+  const openDocEditor = async (doc: Document) => {
+    setEditingDoc(doc);
+    setEditDocFilename(doc.filename);
+    setEditDocContent('');
+    setIsLoadingDocContent(true);
+    try {
+      const res = await knowledgeApi.getDocumentContent(doc.id);
+      setEditDocContent(res.content);
+    } catch (err) {
+      showApiError(err, toast);
+    } finally {
+      setIsLoadingDocContent(false);
+    }
+  };
+
+  const saveDocEdit = async () => {
+    if (!editingDoc) return;
+    setIsSavingDoc(true);
+    try {
+      const res = await knowledgeApi.updateDocument(editingDoc.id, {
+        content: editDocContent,
+        filename: editDocFilename,
+      });
+      toast.success(`文档已保存${res.embedding_ready ? '并完成向量化' : ''}，共 ${res.chunk_count} 个片段`);
+      setEditingDoc(null);
+      loadDocuments(selectedKb!.id);
+    } catch (err) {
+      showApiError(err, toast);
+    } finally {
+      setIsSavingDoc(false);
+    }
+  };
+
+  const docToNote = async (doc: Document) => {
+    try {
+      const res = await notesApi.createFromDocument(doc.id);
+      toast.success(`已转为笔记：${res.note.title}`);
+    } catch (err) {
+      showApiError(err, toast);
+    }
+  };
+
+  // Import note to knowledge base
+  const [showImportNoteModal, setShowImportNoteModal] = useState(false);
+  const [importNotes, setImportNotes] = useState<any[]>([]);
+  const [importSearch, setImportSearch] = useState('');
+  const [selectedNoteImport, setSelectedNoteImport] = useState<string | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+
+  const loadNotesForImport = async () => {
+    try {
+      const res = await notesApi.getNotes(importSearch ? { search: importSearch } : undefined);
+      setImportNotes(res.notes);
+    } catch (err) {
+      showApiError(err, toast);
+    }
+  };
+
+  const openImportNoteModal = () => {
+    setShowImportNoteModal(true);
+    setSelectedNoteImport(null);
+    setImportSearch('');
+    loadNotesForImport();
+  };
+
+  const doImportNote = async () => {
+    if (!selectedNoteImport || !selectedKb) return;
+    setIsImporting(true);
+    try {
+      const res = await knowledgeApi.importNote(selectedKb.id, selectedNoteImport);
+      toast.success(`笔记已导入知识库${res.embedding_ready ? '并完成向量化' : ''}`);
+      setShowImportNoteModal(false);
+      loadDocuments(selectedKb.id);
+    } catch (err) {
+      showApiError(err, toast);
+    } finally {
+      setIsImporting(false);
+    }
+  };
 
   useEffect(() => {
     loadKnowledgeBases();
@@ -348,6 +438,13 @@ function KnowledgePage() {
               </div>
               <div className="flex items-center gap-2">
                 <button
+                  onClick={openImportNoteModal}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-card-bg)] border border-[var(--color-border)] hover:border-[var(--color-primary)] rounded-lg transition-colors text-sm text-[var(--color-text-primary)]"
+                >
+                  <BookmarkPlus size={14} />
+                  导入笔记
+                </button>
+                <button
                   onClick={openShareModal}
                   className="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-card-bg)] border border-[var(--color-border)] hover:border-[var(--color-primary)] rounded-lg transition-colors text-sm text-[var(--color-text-primary)]"
                 >
@@ -458,12 +555,28 @@ function KnowledgePage() {
                               )}
                             </div>
                           </div>
-                          <button
-                            onClick={() => handleDeleteDoc(doc.id)}
-                            className="opacity-0 group-hover:opacity-100 p-2 hover:bg-red-500/20 rounded-lg transition-all"
-                          >
-                            <Trash2 size={16} className="text-red-400" />
-                          </button>
+                          <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1">
+                            <button
+                              onClick={() => openDocEditor(doc)}
+                              className="p-2 hover:bg-blue-500/20 rounded-lg transition-all"
+                              title="编辑文档"
+                            >
+                              <Edit3 size={16} className="text-blue-400" />
+                            </button>
+                            <button
+                              onClick={() => docToNote(doc)}
+                              className="p-2 hover:bg-emerald-500/20 rounded-lg transition-all"
+                              title="转为笔记"
+                            >
+                              <BookmarkPlus size={16} className="text-emerald-400" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteDoc(doc.id)}
+                              className="p-2 hover:bg-red-500/20 rounded-lg transition-all"
+                            >
+                              <Trash2 size={16} className="text-red-400" />
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -691,6 +804,148 @@ function KnowledgePage() {
                   邀请
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Edit Document Modal */}
+      {editingDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-2xl bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-2xl shadow-2xl flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between p-5 border-b border-[var(--color-border)]">
+              <h3 className="text-base font-medium text-white">编辑文档</h3>
+              <button
+                onClick={() => setEditingDoc(null)}
+                className="p-2 hover:bg-[var(--color-hover-bg)] rounded-lg transition-colors"
+              >
+                <X size={18} className="text-[var(--color-text-secondary)]" />
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto flex-1 space-y-4">
+              <div>
+                <label className="block text-sm text-[var(--color-text-secondary)] mb-2">文档名称</label>
+                <input
+                  type="text"
+                  value={editDocFilename}
+                  onChange={(e) => setEditDocFilename(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)]"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-[var(--color-text-secondary)] mb-2">正文内容</label>
+                {isLoadingDocContent ? (
+                  <div className="flex items-center justify-center py-20 text-[var(--color-text-muted)] text-sm">
+                    <Loader size={18} className="animate-spin mr-2" />
+                    加载中...
+                  </div>
+                ) : (
+                  <textarea
+                    value={editDocContent}
+                    onChange={(e) => setEditDocContent(e.target.value)}
+                    rows={18}
+                    className="w-full px-4 py-3 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] resize-none font-mono"
+                    placeholder="在这里编辑文档内容..."
+                  />
+                )}
+              </div>
+              <p className="text-xs text-[var(--color-text-muted)]">
+                保存后将自动重新分块并向量化。当前文档共 {editingDoc.chunk_count || 0} 个片段。
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-3 p-5 border-t border-[var(--color-border)]">
+              <button
+                onClick={() => setEditingDoc(null)}
+                className="px-4 py-2.5 bg-[var(--color-hover-bg)] hover:bg-[var(--color-border)] text-[var(--color-text-primary)] rounded-lg transition-colors text-sm"
+              >
+                取消
+              </button>
+              <button
+                onClick={saveDocEdit}
+                disabled={isSavingDoc || isLoadingDocContent || !editDocContent.trim()}
+                className="flex items-center gap-2 px-4 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors text-sm"
+              >
+                {isSavingDoc ? <Loader size={16} className="animate-spin" /> : <Save size={16} />}
+                保存更改
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import Note Modal */}
+      {showImportNoteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-lg bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-2xl shadow-2xl flex flex-col max-h-[80vh]">
+            <div className="flex items-center justify-between p-5 border-b border-[var(--color-border)]">
+              <h3 className="text-base font-medium text-white">将笔记导入知识库</h3>
+              <button
+                onClick={() => setShowImportNoteModal(false)}
+                className="p-2 hover:bg-[var(--color-hover-bg)] rounded-lg transition-colors"
+              >
+                <X size={18} className="text-[var(--color-text-secondary)]" />
+              </button>
+            </div>
+            <div className="p-4 border-b border-[var(--color-border)]">
+              <div className="relative">
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-text-muted)]" />
+                <input
+                  type="text"
+                  placeholder="搜索笔记..."
+                  value={importSearch}
+                  onChange={(e) => { setImportSearch(e.target.value); }}
+                  onKeyUp={(e) => e.key === 'Enter' && loadNotesForImport()}
+                  className="w-full pl-9 pr-4 py-2.5 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)]"
+                />
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              {importNotes.length === 0 ? (
+                <div className="py-12 text-center text-[var(--color-text-muted)] text-sm">
+                  暂无笔记，先去创建一篇吧
+                </div>
+              ) : (
+                importNotes.map((note: any) => (
+                  <div
+                    key={note.id}
+                    onClick={() => setSelectedNoteImport(note.id)}
+                    className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                      selectedNoteImport === note.id
+                        ? 'bg-[var(--color-primary)]/15 border border-[var(--color-primary)]/50'
+                        : 'hover:bg-[var(--color-hover-bg)] border border-transparent'
+                    }`}
+                  >
+                    <h4 className="text-sm font-medium text-white truncate">{note.title || '无标题'}</h4>
+                    <p className="text-xs text-[var(--color-text-muted)] mt-1 line-clamp-2">
+                      {note.content ? note.content.slice(0, 80) : '(空内容)'}
+                    </p>
+                    {note.tags?.length > 0 && (
+                      <div className="flex gap-1.5 mt-2">
+                        {note.tags.slice(0, 3).map((t: string) => (
+                          <span key={t} className="text-[10px] px-2 py-0.5 bg-[var(--color-hover-bg)] text-[var(--color-text-secondary)] rounded">
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-3 p-4 border-t border-[var(--color-border)]">
+              <button
+                onClick={() => setShowImportNoteModal(false)}
+                className="px-4 py-2.5 bg-[var(--color-hover-bg)] hover:bg-[var(--color-border)] text-[var(--color-text-primary)] rounded-lg transition-colors text-sm"
+              >
+                取消
+              </button>
+              <button
+                onClick={doImportNote}
+                disabled={!selectedNoteImport || isImporting}
+                className="flex items-center gap-2 px-4 py-2.5 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors text-sm"
+              >
+                {isImporting ? <Loader size={16} className="animate-spin" /> : <Upload size={16} />}
+                导入
+              </button>
             </div>
           </div>
         </div>

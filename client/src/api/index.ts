@@ -141,6 +141,18 @@ export const knowledgeApi = {
   },
   deleteDocument: (id: string) =>
     request<{ success: boolean }>(`/knowledge/documents/${id}`, { method: 'DELETE' }),
+  getDocumentContent: (id: string) =>
+    request<{ content: string; filename: string; chunk_count: number }>(`/knowledge/documents/${id}/content`),
+  updateDocument: (id: string, data: { content: string; filename?: string }) =>
+    request<{ document: any; embedding_ready: boolean; chunk_count: number }>(`/knowledge/documents/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+  importNote: (baseId: string, noteId: string) =>
+    request<{ document: any; embedding_ready: boolean }>(`/knowledge/bases/${baseId}/import-note`, {
+      method: 'POST',
+      body: JSON.stringify({ note_id: noteId }),
+    }),
   queryBase: (baseId: string, query: string, topK?: number) =>
     request<{ results: any[]; answer: string }>(`/knowledge/bases/${baseId}/query`, {
       method: 'POST',
@@ -292,6 +304,11 @@ export const notesApi = {
     request<{ success: boolean; deleted_count: number }>('/notes/batch-delete', {
       method: 'POST',
       body: JSON.stringify({ ids }),
+    }),
+  createFromDocument: (documentId: string) =>
+    request<{ note: any }>('/notes/from-document', {
+      method: 'POST',
+      body: JSON.stringify({ document_id: documentId }),
     }),
 };
 

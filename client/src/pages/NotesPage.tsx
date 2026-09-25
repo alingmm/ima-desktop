@@ -13,11 +13,15 @@ import {
   Save,
   X,
   BookmarkPlus,
+  BookOpen,
+  Loader,
 } from 'lucide-react';
-import { notesApi } from '../api';
+import { notesApi, knowledgeApi } from '../api';
+import { useToast, showApiError } from '../components/Toast';
 import type { Note } from '../types';
 
 export default function NotesPage() {
+  const toast = useToast();
   const [notes, setNotes] = useState<Note[]>([]);
   const [tags, setTags] = useState<string[]>([]);
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
@@ -31,6 +35,10 @@ export default function NotesPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [showTagInput, setShowTagInput] = useState(false);
   const [newTagName, setNewTagName] = useState('');
+  const [showImportKbModal, setShowImportKbModal] = useState(false);
+  const [kbList, setKbList] = useState<any[]>([]);
+  const [selectedKbImport, setSelectedKbImport] = useState<string | null>(null);
+  const [isImportingKb, setIsImportingKb] = useState(false);
 
   const loadNotes = useCallback(async () => {
     try {
@@ -133,6 +141,31 @@ export default function NotesPage() {
     }
   };
 
+  const openImportKbModal = async () => {
+    setShowImportKbModal(true);
+    setSelectedKbImport(null);
+    try {
+      const res = await knowledgeApi.getBases();
+      setKbList(res.bases);
+    } catch (err) {
+      showApiError(err, toast);
+    }
+  };
+
+  const doImportToKb = async () => {
+    if (!selectedKbImport || !selectedNote) return;
+    setIsImportingKb(true);
+    try {
+      const res = await knowledgeApi.importNote(selectedKbImport, selectedNote.id);
+      toast.success(`已导入知识库${res.embedding_ready ? '并完成向量化' : ''}`);
+      setShowImportKbModal(false);
+    } catch (err) {
+      showApiError(err, toast);
+    } finally {
+      setIsImportingKb(false);
+    }
+  };
+
   const addTagToNote = (tag: string) => {
     const currentTags = editTags
       .split(/[,，]/)
@@ -198,6 +231,14 @@ export default function NotesPage() {
               </>
             ) : (
               <>
+                <button
+                  onClick={openImportKbModal}
+                  className="px-4 py-2 text-sm text-[#8b949e] hover:bg-[#21262d] rounded-lg transition-colors flex items-center gap-2"
+                  title="导入到知识库"
+                >
+                  <BookOpen size={16} />
+                  导入知识库
+                </button>
                 <button
                   onClick={(e) => togglePin(selectedNote, e)}
                   className={`p-2 rounded-lg transition-colors ${selectedNote.is_pinned ? 'text-yellow-400 bg-yellow-400/10' : 'text-[#8b949e] hover:bg-[#21262d]'}`}
@@ -534,6 +575,62 @@ export default function NotesPage() {
           )}
         </div>
       </div>
+      {/* Import to Knowledge Base Modal */}
+      {showImportKbModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md bg-[#1c2128] border border-[#30363d] rounded-2xl shadow-2xl flex flex-col max-h-[70vh]">
+            <div className="flex items-center justify-between p-5 border-b border-[#30363d]">
+              <h3 className="text-base font-medium text-white">导入到知识库</h3>
+              <button
+                onClick={() => setShowImportKbModal(false)}
+                className="p-2 hover:bg-[#21262d] rounded-lg transition-colors"
+              >
+                <X size={18} className="text-[#8b949e]" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              {kbList.length === 0 ? (
+                <div className="py-12 text-center text-[#6e7681] text-sm">
+                  暂无知识库，先去创建一个吧
+                </div>
+              ) : (
+                kbList.map((kb) => (
+                  <div
+                    key={kb.id}
+                    onClick={() => setSelectedKbImport(kb.id)}
+                    className={`p-3 rounded-lg cursor-pointer transition-colors ${
+                      selectedKbImport === kb.id
+                        ? 'bg-gradient-to-r from-blue-500/15 to-purple-600/15 border border-blue-500/50'
+                        : 'hover:bg-[#21262d] border border-transparent'
+                    }`}
+                  >
+                    <h4 className="text-sm font-medium text-white">{kb.name}</h4>
+                    {kb.description && (
+                      <p className="text-xs text-[#8b949e] mt-1 line-clamp-1">{kb.description}</p>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-3 p-4 border-t border-[#30363d]">
+              <button
+                onClick={() => setShowImportKbModal(false)}
+                className="px-4 py-2.5 bg-[#21262d] hover:bg-[#30363d] text-white rounded-lg transition-colors text-sm"
+              >
+                取消
+              </button>
+              <button
+                onClick={doImportToKb}
+                disabled={!selectedKbImport || isImportingKb}
+                className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-blue-500 to-purple-600 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-opacity text-sm"
+              >
+                {isImportingKb ? <Loader size={16} className="animate-spin" /> : <BookmarkPlus size={16} />}
+                导入
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

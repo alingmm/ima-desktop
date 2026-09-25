@@ -78,6 +78,9 @@ export interface DocumentRecord {
   status?: string;
   error_code?: string | null;
   error_message?: string | null;
+  source?: string; // 'upload' | 'url' | 'note'
+  source_note_id?: string; // when source === 'note'
+  file_type?: string;
   created_at: string;
   updated_at?: string;
 }
