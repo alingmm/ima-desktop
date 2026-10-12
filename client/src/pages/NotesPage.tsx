@@ -39,6 +39,7 @@ export default function NotesPage() {
   const [kbList, setKbList] = useState<any[]>([]);
   const [selectedKbImport, setSelectedKbImport] = useState<string | null>(null);
   const [isImportingKb, setIsImportingKb] = useState(false);
+  const [loadingKbList, setLoadingKbList] = useState(false);
 
   const loadNotes = useCallback(async () => {
     try {
@@ -144,11 +145,15 @@ export default function NotesPage() {
   const openImportKbModal = async () => {
     setShowImportKbModal(true);
     setSelectedKbImport(null);
+    setKbList([]);
+    setLoadingKbList(true);
     try {
       const res = await knowledgeApi.getBases();
       setKbList(res.bases);
     } catch (err) {
       showApiError(err, toast);
+    } finally {
+      setLoadingKbList(false);
     }
   };
 
@@ -157,7 +162,11 @@ export default function NotesPage() {
     setIsImportingKb(true);
     try {
       const res = await knowledgeApi.importNote(selectedKbImport, selectedNote.id);
-      toast.success(`已导入知识库${res.embedding_ready ? '并完成向量化' : ''}`);
+      if (res.embedding_ready) {
+        toast.success('已导入知识库并完成向量化');
+      } else {
+        toast.warning('已导入知识库（未向量化，配置 Embedding 后重新编辑保存即可生效）');
+      }
       setShowImportKbModal(false);
     } catch (err) {
       showApiError(err, toast);
@@ -589,7 +598,12 @@ export default function NotesPage() {
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {kbList.length === 0 ? (
+              {loadingKbList ? (
+                <div className="py-12 flex items-center justify-center gap-2 text-[#8b949e] text-sm">
+                  <Loader size={16} className="animate-spin" />
+                  正在加载知识库列表...
+                </div>
+              ) : kbList.length === 0 ? (
                 <div className="py-12 text-center text-[#6e7681] text-sm">
                   暂无知识库，先去创建一个吧
                 </div>

@@ -2,11 +2,11 @@ import { Router } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { v4 as uuidv4 } from 'uuid';
 import {
-  selectWhere, insertOne, updateOne, deleteWhere, orderBy,
+  selectWhere, insertOne, insertMany, updateOne, deleteWhere, orderBy,
   ConversationRecord, MessageRecord, KnowledgeBaseRecord, DocumentRecord,
   DocumentChunkRecord, selectOne,
 } from '../storage/json-storage';
-import { chatCompletion, streamChatCompletion, createEmbedding, cosineSimilarity, API_ERRORS } from '../services/ai';
+import { chatCompletion, streamChatCompletion, createEmbedding, createEmbeddingsBatch, cosineSimilarity, API_ERRORS } from '../services/ai';
 import { recallMemories, extractMemoryFromConversation } from '../services/memory';
 import { loadConfig } from '../config';
 import { splitTextIntoChunks } from '../utils/text';
@@ -324,43 +324,55 @@ router.post('/save-to-knowledge', authMiddleware, async (req: AuthRequest, res) 
       created_at: new Date().toISOString(),
     } as DocumentRecord);
 
-    // 尝试向量化
+    // 尝试向量化（受控并发 + 超时 + 批量一次写入，失败降级为纯文本，绝不冒泡）
+    let embeddingReady = false;
+    let embedErrorCode: string | null = null;
+    let embedErrorMessage: string | null = null;
     try {
-      const chunks = splitTextIntoChunks(content, 800);
-      const chunkRecords: DocumentChunkRecord[] = [];
-      for (let i = 0; i < Math.min(chunks.length, 50); i++) {
-        try {
-          const embedding = await createEmbedding(chunks[i]);
-          chunkRecords.push({
-            id: uuidv4(),
-            document_id: docId,
-            knowledge_base_id: baseId,
-            chunk_index: i,
-            content: chunks[i],
-            embedding,
-            created_at: new Date().toISOString(),
-          });
-        } catch (embErr: any) {
-          // embedding 失败也保存纯文本
-          chunkRecords.push({
-            id: uuidv4(),
-            document_id: docId,
-            knowledge_base_id: baseId,
-            chunk_index: i,
-            content: chunks[i],
-            embedding: null,
-            created_at: new Date().toISOString(),
-          });
-        }
+      const chunks = splitTextIntoChunks(content, 800).slice(0, 100);
+      const batch = await createEmbeddingsBatch(chunks, 3, 30_000);
+      const chunkRecords: DocumentChunkRecord[] = chunks.map((text, i) => ({
+        id: uuidv4(),
+        document_id: docId,
+        knowledge_base_id: baseId,
+        chunk_index: i,
+        content: text,
+        embedding: batch.embeddings[i],
+        created_at: new Date().toISOString(),
+      }));
+      if (chunkRecords.length > 0) {
+        insertMany('document_chunks', chunkRecords);
       }
-      for (const cr of chunkRecords) {
-        insertOne('document_chunks', cr);
+      embeddingReady = batch.failedCount === 0;
+      if (!embeddingReady) {
+        embedErrorCode = batch.firstError?.code || 'EMBEDDING_ERROR';
+        embedErrorMessage = batch.firstError?.message || `部分向量生成失败（${batch.failedCount}/${chunks.length}）`;
       }
     } catch (embErr: any) {
       console.warn('Embedding for saved chat failed:', embErr.message);
+      embedErrorCode = embErr.code || 'EMBEDDING_ERROR';
+      embedErrorMessage = embErr.message || '向量生成失败';
+      // 兜底：保存纯文本分块
+      try {
+        const chunks = splitTextIntoChunks(content, 800).slice(0, 100);
+        const chunkRecords: DocumentChunkRecord[] = chunks.map((text, i) => ({
+          id: uuidv4(),
+          document_id: docId,
+          knowledge_base_id: baseId,
+          chunk_index: i,
+          content: text,
+          embedding: null,
+          created_at: new Date().toISOString(),
+        }));
+        if (chunkRecords.length > 0) {
+          insertMany('document_chunks', chunkRecords);
+        }
+      } catch (saveErr: any) {
+        console.error('Failed to save chat chunks:', saveErr.message);
+      }
     }
 
-    res.json({ success: true, document: doc, base_id: baseId });
+    res.json({ success: true, document: doc, base_id: baseId, embedding_ready: embeddingReady, embed_error_code: embedErrorCode, embed_error_message: embedErrorMessage });
   } catch (error: any) {
     console.error('Save to knowledge error:', error.message);
     res.status(500).json({ error: 'Failed to save to knowledge', message: error.message });

@@ -10,7 +10,7 @@ import {
   KnowledgeBaseRecord, DocumentRecord, DocumentChunkRecord,
   KnowledgeShareRecord, KnowledgeCollaboratorRecord,
 } from '../storage/json-storage';
-import { createEmbedding, chatCompletion, cosineSimilarity, API_ERRORS } from '../services/ai';
+import { createEmbedding, createEmbeddingsBatch, chatCompletion, cosineSimilarity, API_ERRORS } from '../services/ai';
 import { splitTextIntoChunks } from '../utils/text';
 import { getUploadsDir, ensureDir } from '../config';
 
@@ -165,27 +165,25 @@ router.post('/bases/:id/upload', authMiddleware, upload.single('file'), async (r
     // Chunk the content
     const chunks = splitTextIntoChunks(content, 800);
 
-    // Generate embeddings for chunks
-    const embeddings: (number[] | null)[] = [];
-    const limitedChunks = chunks.slice(0, 50);
+    // Generate embeddings for chunks（受控并发 + 超时 + 单块失败不中断）
+    const limitedChunks = chunks.slice(0, 100);
     let embeddingFailed = false;
     let embeddingErrorCode: string | null = null;
     let embeddingErrorMessage: string | null = null;
+    let embeddings: (number[] | null)[] = new Array(limitedChunks.length).fill(null);
 
-    for (const chunk of limitedChunks) {
-      try {
-        const embedding = await createEmbedding(chunk);
-        embeddings.push(embedding);
-      } catch (e: any) {
+    try {
+      const batch = await createEmbeddingsBatch(limitedChunks, 3, 30_000);
+      embeddings = batch.embeddings;
+      if (batch.failedCount > 0) {
         embeddingFailed = true;
-        embeddingErrorCode = e.code || 'EMBEDDING_ERROR';
-        embeddingErrorMessage = e.message || '向量生成失败';
-        // 所有剩余的都设为 null
-        for (let i = embeddings.length; i < limitedChunks.length; i++) {
-          embeddings.push(null);
-        }
-        break;
+        embeddingErrorCode = batch.firstError?.code || 'EMBEDDING_ERROR';
+        embeddingErrorMessage = batch.firstError?.message || `部分向量生成失败（${batch.failedCount}/${limitedChunks.length}）`;
       }
+    } catch (e: any) {
+      embeddingFailed = true;
+      embeddingErrorCode = e.code || 'EMBEDDING_ERROR';
+      embeddingErrorMessage = e.message || '向量生成失败';
     }
 
     const docId = uuidv4();
@@ -302,45 +300,52 @@ router.patch('/documents/:id', authMiddleware, async (req: AuthRequest, res) => 
     deleteWhere('document_chunks', { document_id: id } as Partial<DocumentChunkRecord>);
 
     // 2. Re-chunk
-    const textChunks = splitTextIntoChunks(content, 800);
+    const textChunks = splitTextIntoChunks(content, 800).slice(0, 100);
 
-    // 3. Try embedding
+    // 3. Try embedding（受控并发 + 超时 + 批量一次写入，单块失败不中断）
     let embeddingReady = false;
     let embedError: string | null = null;
     let embedErrorCode: string | null = null;
-    const embeddings: (number[] | null)[] = new Array(textChunks.length).fill(null);
 
     try {
-      for (let i = 0; i < textChunks.length; i++) {
-        embeddings[i] = await createEmbedding(textChunks[i]);
+      const batch = await createEmbeddingsBatch(textChunks, 3, 30_000);
+      const chunkRecords = textChunks.map((text, index) => ({
+        id: uuidv4(),
+        document_id: id,
+        knowledge_base_id: doc.knowledge_base_id,
+        user_id: req.userId!,
+        chunk_index: index,
+        content: text,
+        embedding: batch.embeddings[index],
+        created_at: new Date().toISOString(),
+      } as DocumentChunkRecord));
+      if (chunkRecords.length > 0) {
+        insertMany('document_chunks', chunkRecords);
       }
-      textChunks.forEach((text, index) => {
-        insertOne('document_chunks', {
-          id: uuidv4(),
-          document_id: id,
-          knowledge_base_id: doc.knowledge_base_id,
-          user_id: req.userId,
-          chunk_index: index,
-          content: text,
-          embedding: embeddings[index],
-          created_at: new Date().toISOString(),
-        } as DocumentChunkRecord);
-      });
-      embeddingReady = true;
+      embeddingReady = batch.failedCount === 0;
+      if (!embeddingReady) {
+        embedError = batch.firstError?.message || `部分向量生成失败（${batch.failedCount}/${textChunks.length}）`;
+        embedErrorCode = batch.firstError?.code || 'EMBEDDING_ERROR';
+      }
     } catch (embedErr: any) {
-      // Save chunks without embeddings, mark as failed
-      textChunks.forEach((text, index) => {
-        insertOne('document_chunks', {
+      // 兜底：保存纯文本分块，绝不冒泡到主进程
+      try {
+        const chunkRecords = textChunks.map((text, index) => ({
           id: uuidv4(),
           document_id: id,
           knowledge_base_id: doc.knowledge_base_id,
-          user_id: req.userId,
+          user_id: req.userId!,
           chunk_index: index,
           content: text,
-          embedding: embeddings[index] || null,
+          embedding: null,
           created_at: new Date().toISOString(),
-        } as DocumentChunkRecord);
-      });
+        } as DocumentChunkRecord));
+        if (chunkRecords.length > 0) {
+          insertMany('document_chunks', chunkRecords);
+        }
+      } catch (saveErr: any) {
+        console.error('Failed to save chunks after embedding error:', saveErr.message);
+      }
       embedError = embedErr.message || 'Embedding failed';
       embedErrorCode = embedErr.code || 'EMBEDDING_ERROR';
     }
@@ -402,7 +407,7 @@ router.post('/bases/:id/import-note', authMiddleware, async (req: AuthRequest, r
     }
 
     const docId = uuidv4();
-    const chunks = splitTextIntoChunks(content, 800);
+    const chunks = splitTextIntoChunks(content, 800).slice(0, 100);
 
     // Insert document placeholder first
     insertOne('documents', {
@@ -422,42 +427,52 @@ router.post('/bases/:id/import-note', authMiddleware, async (req: AuthRequest, r
       updated_at: new Date().toISOString(),
     } as DocumentRecord);
 
-    // Try embedding
+    // Try embedding（受控并发 + 超时 + 单块失败不中断；批量一次写入避免 O(N²) 全表重写）
+    const MAX_CHUNKS = 100;
+    const limitedChunks = chunks.slice(0, MAX_CHUNKS);
     let embeddingReady = false;
     let embedError: string | null = null;
     let embedErrorCode: string | null = null;
-    const embeddings: (number[] | null)[] = new Array(chunks.length).fill(null);
 
     try {
-      for (let i = 0; i < chunks.length; i++) {
-        embeddings[i] = await createEmbedding(chunks[i]);
+      const batch = await createEmbeddingsBatch(limitedChunks, 3, 30_000);
+      const chunkRecords = limitedChunks.map((text, index) => ({
+        id: uuidv4(),
+        document_id: docId,
+        knowledge_base_id: baseId,
+        user_id: req.userId!,
+        chunk_index: index,
+        content: text,
+        embedding: batch.embeddings[index],
+        created_at: new Date().toISOString(),
+      } as DocumentChunkRecord));
+      if (chunkRecords.length > 0) {
+        insertMany('document_chunks', chunkRecords);
       }
-      chunks.forEach((text, index) => {
-        insertOne('document_chunks', {
-          id: uuidv4(),
-          document_id: docId,
-          knowledge_base_id: baseId,
-          user_id: req.userId,
-          chunk_index: index,
-          content: text,
-          embedding: embeddings[index],
-          created_at: new Date().toISOString(),
-        } as DocumentChunkRecord);
-      });
-      embeddingReady = true;
+      embeddingReady = batch.failedCount === 0;
+      if (!embeddingReady) {
+        embedError = batch.firstError?.message || `部分向量生成失败（${batch.failedCount}/${limitedChunks.length}）`;
+        embedErrorCode = batch.firstError?.code || 'EMBEDDING_ERROR';
+      }
     } catch (embedErr: any) {
-      chunks.forEach((text, index) => {
-        insertOne('document_chunks', {
+      // 极端兜底：embedding 流程整体异常也要把纯文本分块保存，绝不冒泡
+      try {
+        const chunkRecords = limitedChunks.map((text, index) => ({
           id: uuidv4(),
           document_id: docId,
           knowledge_base_id: baseId,
-          user_id: req.userId,
+          user_id: req.userId!,
           chunk_index: index,
           content: text,
-          embedding: embeddings[index] || null,
+          embedding: null,
           created_at: new Date().toISOString(),
-        } as DocumentChunkRecord);
-      });
+        } as DocumentChunkRecord));
+        if (chunkRecords.length > 0) {
+          insertMany('document_chunks', chunkRecords);
+        }
+      } catch (saveErr: any) {
+        console.error('Failed to save chunks after embedding error:', saveErr.message);
+      }
       embedError = embedErr.message || 'Embedding failed';
       embedErrorCode = embedErr.code || 'EMBEDDING_ERROR';
     }

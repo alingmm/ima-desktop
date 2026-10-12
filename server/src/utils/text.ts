@@ -5,8 +5,10 @@ export function splitTextIntoChunks(text: string, maxLength: number = 500, overl
 
   const chunks: string[] = [];
   let start = 0;
+  // 防御：分块数量硬上限，任何异常路径都不可能死循环撑爆内存
+  const HARD_LIMIT = Math.max(100, Math.ceil(text.length / Math.max(1, maxLength - overlap)) * 2 + 10);
 
-  while (start < text.length) {
+  while (start < text.length && chunks.length < HARD_LIMIT) {
     let end = Math.min(start + maxLength, text.length);
 
     // 尝试在句子末尾分割
@@ -23,19 +25,25 @@ export function splitTextIntoChunks(text: string, maxLength: number = 500, overl
         }
       }
 
-      if (splitPoint > 0) {
+      if (splitPoint > start) {
         end = splitPoint;
       }
     }
 
-    chunks.push(text.slice(start, end).trim());
-    start = end - overlap;
+    const chunk = text.slice(start, end).trim();
+    if (chunk) {
+      chunks.push(chunk);
+    }
 
-    // 确保 start 不断前进
-    if (start <= 0 || start >= text.length) break;
+    // 已到达文末，必须退出（否则 start = end - overlap 会原地踏步造成死循环 → OOM）
+    if (end >= text.length) break;
+
+    const nextStart = end - overlap;
+    // 确保 start 一定前进；异常时直接跳到 end
+    start = nextStart > start ? nextStart : end;
   }
 
-  return chunks.filter(c => c.length > 0);
+  return chunks;
 }
 
 export function generateId(): string {

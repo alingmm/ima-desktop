@@ -129,13 +129,13 @@ function ChatPage() {
     const answer = msg.role === 'assistant' ? msg.content : '';
 
     if (!selectedBaseId && !newKnowledgeBaseName.trim()) {
-      alert('请选择知识库或输入新知识库名称');
+      toast.warning('请选择知识库或输入新知识库名称');
       return;
     }
 
     try {
       setSavingToKnowledge(true);
-      await chatApi.saveToKnowledge({
+      const res = await chatApi.saveToKnowledge({
         knowledge_base_id: selectedBaseId || undefined,
         knowledge_base_name: showNewBaseInput ? newKnowledgeBaseName.trim() : undefined,
         question,
@@ -143,8 +143,11 @@ function ChatPage() {
       });
       setShowKnowledgeModal(false);
       setSavingToKnowledge(false);
-      // 显示成功提示
-      toast.success('已成功保存到知识库');
+      if (res.embedding_ready === false) {
+        toast.warning(`已保存到知识库（${res.embed_error_message || '未向量化'}）`);
+      } else {
+        toast.success('已成功保存到知识库');
+      }
     } catch (err: any) {
       console.error('Failed to save to knowledge:', err);
       setSavingToKnowledge(false);

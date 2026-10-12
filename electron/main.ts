@@ -2,6 +2,16 @@ import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron';
 import * as path from 'path';
 import * as net from 'net';
 
+// ========== 全局异常兜底：捕获后记录日志，绝不让异常直接终止应用 ==========
+// 后端 Express 运行在主进程内，任何未捕获异常/未处理 Promise rejection 都会导致闪退
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+
 // 使用 Electron 内置 API 判断开发环境，避免依赖外部包
 const isDev = !app.isPackaged;
 

@@ -4,18 +4,37 @@ interface RequestOptions extends RequestInit {
   headers?: Record<string, string>;
 }
 
-async function request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-  });
+const DEFAULT_REQUEST_TIMEOUT = 120_000; // 向量化等长耗时操作给足 2 分钟
+
+async function request<T>(endpoint: string, options: RequestOptions = {}, timeoutMs: number = DEFAULT_REQUEST_TIMEOUT): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${endpoint}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    });
+  } catch (err: any) {
+    clearTimeout(timer);
+    if (err?.name === 'AbortError') {
+      throw new Error('请求超时，请检查服务是否正常或网络连接');
+    }
+    throw new Error(err?.message || '网络请求失败');
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(error.error || `HTTP ${response.status}`);
+    const err = new Error(error.message || error.error || `HTTP ${response.status}`) as Error & { error?: string; code?: string };
+    err.error = error.error;
+    err.code = error.error;
+    throw err;
   }
 
   return response.json();
@@ -108,7 +127,7 @@ export const chatApi = {
     answer?: string;
     message_id?: string;
   }) =>
-    request<{ success: boolean; knowledge_base_id: string; document_id: string }>('/chat/save-to-knowledge', {
+    request<{ success: boolean; knowledge_base_id: string; document_id: string; embedding_ready?: boolean; embed_error_message?: string }>('/chat/save-to-knowledge', {
       method: 'POST',
       body: JSON.stringify(params),
     }),

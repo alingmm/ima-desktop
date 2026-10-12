@@ -57,6 +57,30 @@ function getBaseUrl(): string {
   return normalizeBaseUrl(config.openaiBaseUrl);
 }
 
+// ========== 带超时的 fetch（防止挂起导致前端永久转圈 / 主进程堆积） ==========
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+export async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      const e = new Error(`请求超时（${Math.round(timeoutMs / 1000)}秒无响应），请检查服务地址与网络`) as Error & { code: string };
+      e.code = 'REQUEST_TIMEOUT';
+      throw e;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ========== Chat Completion ==========
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -199,7 +223,7 @@ export async function createEmbedding(text: string): Promise<number[]> {
   const apiKey = ensureApiKey();
   const config = loadConfig();
 
-  const response = await fetch(`${getBaseUrl()}/embeddings`, {
+  const response = await fetchWithTimeout(`${getBaseUrl()}/embeddings`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -227,6 +251,69 @@ export async function createEmbedding(text: string): Promise<number[]> {
     throw err;
   }
   return embedding as number[];
+}
+
+// ========== 批量 embedding（受控并发，单块失败不中断整体，绝不让异常冒泡到主进程） ==========
+export interface BatchEmbeddingResult {
+  embeddings: (number[] | null)[];
+  failedCount: number;
+  firstError: { code: string; message: string } | null;
+}
+
+export async function createEmbeddingsBatch(
+  texts: string[],
+  concurrency: number = 3,
+  perRequestTimeoutMs: number = 30_000
+): Promise<BatchEmbeddingResult> {
+  const results: (number[] | null)[] = new Array(texts.length).fill(null);
+  let failedCount = 0;
+  let firstError: { code: string; message: string } | null = null;
+
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (cursor < texts.length) {
+      const index = cursor++;
+      try {
+        const apiKey = ensureApiKey();
+        const config = loadConfig();
+        const response = await fetchWithTimeout(`${getBaseUrl()}/embeddings`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({ model: config.embeddingModel, input: texts[index] }),
+        }, perRequestTimeoutMs);
+        if (!response.ok) {
+          const errText = await response.text().catch(() => '');
+          const err = new Error(`Embedding 请求失败 (${response.status}): ${(errText || response.statusText).slice(0, 200)}`) as Error & { code: string };
+          err.code = API_ERRORS.REQUEST_FAILED;
+          throw err;
+        }
+        const data = await response.json();
+        const embedding = data?.data?.[0]?.embedding;
+        if (!embedding || !Array.isArray(embedding) || embedding.length === 0) {
+          const err = new Error('Embedding 响应格式无效（当前服务可能不支持向量模型）') as Error & { code: string };
+          err.code = API_ERRORS.INVALID_RESPONSE;
+          throw err;
+        }
+        results[index] = embedding as number[];
+      } catch (err: any) {
+        failedCount += 1;
+        if (!firstError) {
+          firstError = {
+            code: err?.code || 'EMBEDDING_ERROR',
+            message: err?.message || '向量生成失败',
+          };
+        }
+      }
+    }
+  };
+
+  const workerCount = Math.max(1, Math.min(concurrency, texts.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return { embeddings: results, failedCount, firstError };
 }
 
 // ========== 余弦相似度 ==========

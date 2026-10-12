@@ -5,6 +5,14 @@ import path from 'path';
 import { createServer, Server as HTTPServer } from 'http';
 import { initDataDirs, getUploadsDir } from './config';
 
+// ========== 全局异常兜底：记录日志而不是让进程崩溃（后端可能运行在 Electron 主进程内） ==========
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+
 import chatRoutes from './routes/chat';
 import knowledgeRoutes from './routes/knowledge';
 import videoRoutes from './routes/video';
