@@ -7,6 +7,22 @@ import { useToast } from '../components/Toast';
 
 type SettingsSection = 'profile' | 'appearance' | 'models' | 'notifications' | 'security' | 'about';
 
+// OpenAI 兼容服务预设
+interface ServicePreset {
+  name: string;
+  baseUrl: string;
+  chatModel: string;
+  embeddingModel: string;
+}
+const SERVICE_PRESETS: ServicePreset[] = [
+  { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', chatModel: 'deepseek-chat', embeddingModel: 'text-embedding-ada-002' },
+  { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', chatModel: 'gpt-4o-mini', embeddingModel: 'text-embedding-3-small' },
+  { name: '硅基流动 (SiliconFlow)', baseUrl: 'https://api.siliconflow.cn/v1', chatModel: 'deepseek-ai/DeepSeek-V3', embeddingModel: 'BAAI/bge-m3' },
+  { name: '智谱 (GLM)', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', chatModel: 'glm-4-flash', embeddingModel: 'embedding-2' },
+  { name: '通义千问 (阿里百炼)', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', chatModel: 'qwen-plus', embeddingModel: 'text-embedding-v3' },
+];
+const CUSTOM_PRESET = 'custom';
+
 function SettingsPage() {
   const [activeSection, setActiveSection] = useState<SettingsSection>('profile');
   const [userName, setUserName] = useState('用户');
@@ -310,6 +326,7 @@ function ModelSettings() {
   // Cloud API settings state
   const [cloudLoading, setCloudLoading] = useState(false);
   const [cloudSaving, setCloudSaving] = useState(false);
+  const [selectedPreset, setSelectedPreset] = useState('');
   const [openaiBaseUrl, setOpenaiBaseUrl] = useState('');
   const [openaiApiKey, setOpenaiApiKey] = useState('');
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
@@ -342,6 +359,18 @@ function ModelSettings() {
       console.warn('加载云端设置失败:', e);
     } finally {
       setCloudLoading(false);
+    }
+  };
+
+  // 应用某个服务预设后回填 baseUrl/chatModel/embeddingModel，用户仍可微调
+  const handlePresetChange = (presetId: string) => {
+    setSelectedPreset(presetId);
+    if (presetId === CUSTOM_PRESET) return;
+    const preset = SERVICE_PRESETS.find((p) => p.name === presetId);
+    if (preset) {
+      setOpenaiBaseUrl(preset.baseUrl);
+      setChatModel(preset.chatModel);
+      setEmbeddingModel(preset.embeddingModel);
     }
   };
 
@@ -448,6 +477,26 @@ function ModelSettings() {
           </div>
         ) : (
           <div className="p-5 bg-[var(--color-card-bg)] rounded-xl border border-[var(--color-border)] space-y-5">
+            {/* 预设服务 */}
+            <div>
+              <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
+                选择服务商（可再微调下方字段）
+              </label>
+              <select
+                value={selectedPreset || 'custom'}
+                onChange={(e) => handlePresetChange(e.target.value)}
+                className="w-full px-4 py-2.5 bg-[#0f1419] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] text-sm"
+              >
+                <option value={CUSTOM_PRESET}>自定义 / 手动填写</option>
+                {SERVICE_PRESETS.map((p) => (
+                  <option key={p.name} value={p.name}>{p.name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                选择预设会自动填入正确的接口地址与默认模型，避免填写错误
+              </p>
+            </div>
+
             {/* Base URL */}
             <div>
               <label className="block text-sm text-[var(--color-text-secondary)] mb-2">
@@ -456,12 +505,12 @@ function ModelSettings() {
               <input
                 type="text"
                 value={openaiBaseUrl}
-                onChange={(e) => setOpenaiBaseUrl(e.target.value)}
+                onChange={(e) => { setOpenaiBaseUrl(e.target.value); setSelectedPreset(CUSTOM_PRESET); }}
                 placeholder="https://api.openai.com/v1"
                 className="w-full px-4 py-2.5 bg-[#0f1419] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] text-sm font-mono"
               />
               <p className="text-xs text-[var(--color-text-muted)] mt-2">
-                支持任何 OpenAI 兼容的服务，如 OpenAI 官方、DeepSeek、通义千问、Moonshot 等
+                只需填到版本号(/v1)即可，请勿粘贴完整的 /chat/completions 端点；系统会自动处理
               </p>
             </div>
 

@@ -125,6 +125,7 @@ export default function TrackingPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [pendingProject, setPendingProject] = useState<any>(null); // 等待权限确认的待创建项目
+  const [editingProject, setEditingProject] = useState<TrackingProject | null>(null); // 正在编辑的项目
   const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
 
   // 新建项目表单状态
@@ -179,6 +180,7 @@ export default function TrackingPage() {
   };
 
   const handleCreateClick = () => {
+    setEditingProject(null);
     setFormName('');
     setFormTopic('');
     setFormFrequency('daily');
@@ -194,6 +196,12 @@ export default function TrackingPage() {
     }
     if (!formTopic.trim()) {
       toast.warning('请输入追踪主题');
+      return;
+    }
+
+    // 编辑模式：直接保存编辑（权限沿用项目原有授权，不重复询问）
+    if (editingProject) {
+      await handleUpdateProject();
       return;
     }
 
@@ -301,6 +309,44 @@ export default function TrackingPage() {
         return next;
       });
     }
+  };
+
+  // 打开编辑弹窗，预填当前项目信息
+  const handleEdit = (project: TrackingProject) => {
+    setEditingProject(project);
+    setFormName(project.name);
+    setFormTopic(project.topic);
+    setFormFrequency(project.frequency === 'hourly' || project.frequency === 'daily' || project.frequency === 'weekly' || project.frequency === 'custom' ? project.frequency : 'daily');
+    setFormCron(project.cron_expression || '0 9 * * *');
+    setShowCreateModal(true);
+  };
+
+  // 保存编辑（PATCH）
+  const handleUpdateProject = async () => {
+    if (!editingProject) return;
+    try {
+      setSubmitting(true);
+      const payload: Record<string, any> = {
+        name: formName,
+        topic: formTopic,
+        frequency: formFrequency,
+        cron_expression: formFrequency === 'custom' ? formCron : undefined,
+      };
+      const res = await trackingApi.updateProject(editingProject.id, payload);
+      setProjects(projects.map((p) => (p.id === editingProject.id ? res.project : p)));
+      setShowCreateModal(false);
+      setEditingProject(null);
+      toast.success('追踪任务已更新');
+    } catch (e) {
+      showApiError(e, toast);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCloseCreateModal = () => {
+    setShowCreateModal(false);
+    setEditingProject(null);
   };
 
   const handleDelete = async (project: TrackingProject) => {
@@ -424,6 +470,16 @@ export default function TrackingPage() {
                         ) : (
                           <Play size={14} />
                         )}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEdit(project);
+                        }}
+                        title="编辑"
+                        className="p-1.5 rounded hover:bg-[var(--color-card-bg)] text-[var(--color-text-secondary)] hover:text-white"
+                      >
+                        <Edit3 size={14} />
                       </button>
                       <button
                         onClick={(e) => {
@@ -638,9 +694,11 @@ export default function TrackingPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-[var(--color-card-bg)] rounded-xl w-full max-w-lg mx-4 border border-[var(--color-border)] shadow-2xl">
             <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)]">
-              <h2 className="text-lg font-semibold">新建追踪任务</h2>
+              <h2 className="text-lg font-semibold">
+                {editingProject ? '编辑追踪任务' : '新建追踪任务'}
+              </h2>
               <button
-                onClick={() => setShowCreateModal(false)}
+                onClick={handleCloseCreateModal}
                 className="p-1.5 rounded hover:bg-white/10 text-[var(--color-text-muted)] hover:text-white"
               >
                 <X size={18} />
@@ -710,7 +768,8 @@ export default function TrackingPage() {
                 )}
               </div>
 
-              {/* 权限预览 */}
+              {/* 权限预览（编辑模式不改权限，隐藏） */}
+              {!editingProject && (
               <div>
                 <label className="block text-sm font-medium mb-2 flex items-center gap-1.5">
                   <Shield size={14} />
@@ -764,11 +823,12 @@ export default function TrackingPage() {
                   })}
                 </div>
               </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-2 px-5 py-4 border-t border-[var(--color-border)]">
               <button
-                onClick={() => setShowCreateModal(false)}
+                onClick={handleCloseCreateModal}
                 className="px-4 py-2 text-sm text-[var(--color-text-secondary)] hover:text-white transition-colors"
               >
                 取消
@@ -779,7 +839,7 @@ export default function TrackingPage() {
                 className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg text-sm font-medium flex items-center gap-2 hover:opacity-90 disabled:opacity-50"
               >
                 {submitting && <Loader2 size={14} className="animate-spin" />}
-                创建任务
+                {editingProject ? '保存修改' : '创建任务'}
               </button>
             </div>
           </div>

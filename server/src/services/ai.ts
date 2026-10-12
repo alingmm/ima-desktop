@@ -17,9 +17,44 @@ function ensureApiKey(): string {
   return config.openaiApiKey;
 }
 
+// 需要被剥离的端点路径后缀（当用户把完整端点填入 Base URL 时）
+const ENDPOINT_SUFFIXES = [
+  '/chat/completions',
+  '/embeddings',
+  '/v1/chat/completions',
+  '/v1/embeddings',
+  '/chat/completions/',
+  '/embeddings/',
+  '/v1/chat/completions/',
+  '/v1/embeddings/',
+];
+
+/**
+ * 规范化 OpenAI 兼容 baseUrl：
+ * 1. 去掉末尾多余斜杠
+ * 2. 若用户填入了完整端点（如 .../chat/completions、.../v1/embeddings），智能剥离，统一由代码拼端点
+ */
+export function normalizeBaseUrl(raw: string): string {
+  let url = (raw || '').trim();
+  if (!url) return url;
+
+  // 循环剥离已知端点后缀（可能用户填了嵌套，如 /v1/chat/completions 只剥离一次即可）
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const suffix of ENDPOINT_SUFFIXES) {
+      if (url.endsWith(suffix)) {
+        url = url.slice(0, url.length - suffix.length).replace(/\/$/, '');
+        changed = true;
+      }
+    }
+  }
+  return url.replace(/\/$/, '');
+}
+
 function getBaseUrl(): string {
   const config = loadConfig();
-  return config.openaiBaseUrl.replace(/\/$/, '');
+  return normalizeBaseUrl(config.openaiBaseUrl);
 }
 
 // ========== Chat Completion ==========
