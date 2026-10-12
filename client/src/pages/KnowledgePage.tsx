@@ -225,17 +225,31 @@ function KnowledgePage() {
     try {
       setIsSearching(true);
       setChatAnswer('');
-      const response = await fetch(`/api/knowledge/${selectedKb.id}/search/stream`, {
+      const response = await fetch(`/api/knowledge/bases/${selectedKb.id}/search/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: chatQuery, limit: 5 }),
       });
 
-      if (!response.ok) throw new Error('Search failed');
+      if (!response.ok) {
+        // 解析后端返回的具体错误码与信息，不再笼统报 Search failed
+        let errBody: any = null;
+        try {
+          errBody = await response.json();
+        } catch {
+          // ignore
+        }
+        const err: any = new Error(errBody?.message || `搜索失败 (${response.status})`);
+        err.error = errBody?.error;
+        err.message = errBody?.message || err.message;
+        throw err;
+      }
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let fullText = '';
+      let streamError: string | null = null;
+      let foundResults = false;
 
       if (reader) {
         while (true) {
@@ -249,7 +263,11 @@ function KnowledgePage() {
             if (line.startsWith('data: ')) {
               try {
                 const data = JSON.parse(line.slice(6));
-                if (data.done) {
+                if (data.type === 'results') {
+                  foundResults = Array.isArray(data.results) && data.results.length > 0;
+                } else if (data.error) {
+                  streamError = data.error;
+                } else if (data.done) {
                   break;
                 } else if (data.content) {
                   fullText += data.content;
@@ -262,10 +280,19 @@ function KnowledgePage() {
           }
         }
       }
+
+      if (streamError) {
+        const err: any = new Error(streamError);
+        err.message = streamError;
+        throw err;
+      }
+      if (!foundResults && !fullText) {
+        setChatAnswer('未在该知识库中找到与问题相关的内容。请确认文档已完成向量化（编辑文档重新保存可触发重新向量化）。');
+      }
     } catch (error: any) {
       console.error('RAG search error:', error);
       showApiError(error, toast);
-      setChatAnswer('搜索失败，请稍后重试。');
+      setChatAnswer(error?.message ? `搜索失败：${error.message}` : '搜索失败，请稍后重试。');
     } finally {
       setIsSearching(false);
     }
