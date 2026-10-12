@@ -254,6 +254,29 @@ export const searchApi = {
   getHistory: () => request<{ history: any[] }>('/search/history'),
   deleteHistory: (id: string) =>
     request<{ success: boolean }>(`/search/history/${id}`, { method: 'DELETE' }),
+  clearHistory: () =>
+    request<{ success: boolean }>('/search/history', { method: 'DELETE' }),
+  importToKb: (
+    baseId: string,
+    items: { title: string; url: string; content: string }[],
+    title?: string
+  ) =>
+    request<{
+      success: boolean;
+      document?: any;
+      chunk_count?: number;
+      embedding_ready?: boolean;
+      embed_error_code?: string;
+      embed_error_message?: string;
+    }>('/search/import-to-kb', {
+      method: 'POST',
+      body: JSON.stringify({ base_id: baseId, items, title }),
+    }),
+  toNote: (items: { title: string; url: string; content: string }[], title?: string) =>
+    request<{ success: boolean; note?: any }>('/search/to-note', {
+      method: 'POST',
+      body: JSON.stringify({ items, title }),
+    }),
 };
 
 // User APIs

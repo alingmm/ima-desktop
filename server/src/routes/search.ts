@@ -4,9 +4,15 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { loadConfig } from '../config';
 import { chatCompletion, API_ERRORS } from '../services/ai';
 import {
-  selectWhere, insertOne, deleteWhere, orderBy,
+  selectWhere, insertOne, insertMany, deleteWhere, updateById,
+  findById, orderBy,
   SearchHistoryRecord,
+  DocumentRecord,
+  DocumentChunkRecord,
+  NoteRecord,
 } from '../storage/json-storage';
+import { createEmbeddingsBatch } from '../services/ai';
+import { splitTextIntoChunks } from '../utils/text';
 
 const router: import('express').Router = Router();
 
@@ -24,6 +30,33 @@ function ensureSearchKey(): string {
     throw err;
   }
   return config.searchApiKey;
+}
+
+// 记录搜索历史：同一用户相同 query 去重，仅刷新 created_at（置顶），不重复堆积
+function recordSearchHistory(userId: string, query: string, resultCount?: number): void {
+  try {
+    const q = query.trim();
+    if (!q || !userId) return;
+    const existing = selectWhere('search_history', { user_id: userId } as Partial<SearchHistoryRecord>)
+      .find((h) => h.query === q);
+    if (existing) {
+      updateById('search_history', existing.id, {
+        created_at: new Date().toISOString(),
+        ...(typeof resultCount === 'number' ? { result_count: resultCount } : {}),
+      } as Partial<SearchHistoryRecord>);
+    } else {
+      insertOne('search_history', {
+        id: uuidv4(),
+        user_id: userId,
+        query: q,
+        result_count: resultCount,
+        created_at: new Date().toISOString(),
+      } as SearchHistoryRecord);
+    }
+  } catch (e: any) {
+    // 历史记录失败不影响搜索主流程
+    console.error('recordSearchHistory error:', e?.message);
+  }
 }
 
 export interface TavilyResult {
@@ -92,18 +125,8 @@ router.post('/web', authMiddleware, async (req: AuthRequest, res) => {
       includeAnswer: needSummary,
     });
 
-    // Save search history
-    try {
-      insertOne('search_history', {
-        id: uuidv4(),
-        user_id: req.userId!,
-        query,
-        result_count: response.results.length,
-        created_at: new Date().toISOString(),
-      } as SearchHistoryRecord);
-    } catch (saveError) {
-      console.error('Save search history error:', saveError);
-    }
+    // Save search history（相同 query 去重，仅刷新时间置顶）
+    recordSearchHistory(req.userId!, query, response.results.length);
 
     res.json({
       summary: response.answer || '',
@@ -241,14 +264,31 @@ ${context}
   }
 });
 
-// Get search history
+// Get search history（按 created_at 倒序，同 query 兜底去重，仅保留最新一条）
 router.get('/history', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const history = selectWhere('search_history', { user_id: req.userId } as Partial<SearchHistoryRecord>);
-    const sorted = orderBy(history, 'created_at', 'desc').slice(0, 20);
-    res.json({ history: sorted });
+    const sorted = orderBy(history, 'created_at', 'desc');
+    const seen = new Set<string>();
+    const deduped = sorted.filter((h) => {
+      const key = (h.query || '').trim();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 50);
+    res.json({ history: deduped });
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to get search history', message: error.message });
+  }
+});
+
+// Clear all search history（清空当前用户全部历史）
+router.delete('/history', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const count = deleteWhere('search_history', { user_id: req.userId } as Partial<SearchHistoryRecord>);
+    res.json({ success: true, deleted: count });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to clear search history', message: error.message });
   }
 });
 
@@ -264,6 +304,167 @@ router.delete('/history/:id', authMiddleware, async (req: AuthRequest, res) => {
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ error: 'Failed to delete search history', message: error.message });
+  }
+});
+
+interface ImportItem {
+  title?: string;
+  url?: string;
+  content?: string;
+}
+
+// 把搜索结果拼接成一篇文档内容（Markdown）
+function buildSearchDoc(title: string, items: ImportItem[]): string {
+  const lines: string[] = [`# ${title || '联网搜索结果'}`, ''];
+  items.forEach((it, i) => {
+    lines.push(`## ${i + 1}. ${it.title || '（无标题）'}`);
+    if (it.url) lines.push(`来源：${it.url}`);
+    if (it.content) lines.push('', it.content);
+    lines.push('', '---', '');
+  });
+  return lines.join('\n');
+}
+
+// 搜索结果导入知识库（复用分块 + createEmbeddingsBatch，未配 embedding 时降级保存无向量文档）
+router.post('/import-to-kb', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { base_id, items, title } = req.body as { base_id?: string; items?: ImportItem[]; title?: string };
+
+    if (!base_id) {
+      res.status(400).json({ error: 'base_id is required' });
+      return;
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      res.status(400).json({ error: 'items is required' });
+      return;
+    }
+
+    const base = findById('knowledge_bases', base_id) as any;
+    if (!base || base.user_id !== req.userId) {
+      res.status(404).json({ error: 'Knowledge base not found' });
+      return;
+    }
+
+    const docTitle = (title && title.trim()) || `搜索结果_${new Date().toLocaleString('zh-CN')}`;
+    const content = buildSearchDoc(docTitle, items);
+    const docId = uuidv4();
+    const chunks = splitTextIntoChunks(content, 800).slice(0, 100);
+
+    insertOne('documents', {
+      id: docId,
+      knowledge_base_id: base_id,
+      user_id: req.userId,
+      filename: `${docTitle}.md`,
+      file_type: 'text/markdown',
+      file_size: Buffer.byteLength(content, 'utf8'),
+      chunk_count: chunks.length,
+      status: 'processing',
+      error_code: null,
+      error_message: null,
+      source: 'search',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as DocumentRecord);
+
+    let embeddingReady = false;
+    let embedError: string | null = null;
+    let embedErrorCode: string | null = null;
+
+    try {
+      const batch = await createEmbeddingsBatch(chunks, 3, 30_000);
+      if (chunks.length > 0) {
+        const chunkRecords = chunks.map((text, index) => ({
+          id: uuidv4(),
+          document_id: docId,
+          knowledge_base_id: base_id,
+          user_id: req.userId!,
+          chunk_index: index,
+          content: text,
+          embedding: batch.embeddings[index],
+          created_at: new Date().toISOString(),
+        } as DocumentChunkRecord));
+        insertMany('document_chunks', chunkRecords);
+      }
+      embeddingReady = batch.failedCount === 0;
+      if (!embeddingReady) {
+        embedError = batch.firstError?.message || `部分向量生成失败（${batch.failedCount}/${chunks.length}）`;
+        embedErrorCode = batch.firstError?.code || 'EMBEDDING_ERROR';
+      }
+    } catch (embedErr: any) {
+      // 降级：保存无向量纯文本分块，绝不冒泡
+      try {
+        if (chunks.length > 0) {
+          const chunkRecords = chunks.map((text, index) => ({
+            id: uuidv4(),
+            document_id: docId,
+            knowledge_base_id: base_id,
+            user_id: req.userId!,
+            chunk_index: index,
+            content: text,
+            embedding: null,
+            created_at: new Date().toISOString(),
+          } as DocumentChunkRecord));
+          insertMany('document_chunks', chunkRecords);
+        }
+      } catch { /* 忽略文本兜底写入错误 */ }
+      embeddingReady = false;
+      embedError = embedErr?.message || '向量生成失败';
+      embedErrorCode = embedErr?.code || 'EMBEDDING_ERROR';
+    }
+
+    updateById('documents', docId, {
+      status: embeddingReady ? 'completed' : 'failed',
+      chunk_count: chunks.length,
+      error_code: embeddingReady ? null : embedErrorCode,
+      error_message: embeddingReady ? null : embedError,
+      updated_at: new Date().toISOString(),
+    } as Partial<DocumentRecord>);
+
+    const doc = findById('documents', docId) as DocumentRecord;
+    res.status(201).json({
+      success: true,
+      document: doc,
+      chunk_count: chunks.length,
+      embedding_ready: embeddingReady,
+      embed_error_code: embedErrorCode,
+      embed_error_message: embedError,
+    });
+  } catch (error: any) {
+    console.error('Search import-to-kb error:', error.message);
+    res.status(500).json({ error: 'IMPORT_FAILED', message: error.message });
+  }
+});
+
+// 搜索结果转笔记
+router.post('/to-note', authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { items, title } = req.body as { items?: ImportItem[]; title?: string };
+
+    if (!Array.isArray(items) || items.length === 0) {
+      res.status(400).json({ error: 'items is required' });
+      return;
+    }
+
+    const noteTitle = (title && title.trim()) || `联网搜索笔记_${new Date().toLocaleString('zh-CN')}`;
+    const content = buildSearchDoc(noteTitle, items);
+    const noteId = uuidv4();
+    const now = new Date().toISOString();
+
+    insertOne('notes', {
+      id: noteId,
+      user_id: req.userId,
+      title: noteTitle,
+      content,
+      tags: ['联网搜索'],
+      created_at: now,
+      updated_at: now,
+    } as NoteRecord);
+
+    const note = findById('notes', noteId) as NoteRecord;
+    res.status(201).json({ success: true, note });
+  } catch (error: any) {
+    console.error('Search to-note error:', error.message);
+    res.status(500).json({ error: 'TO_NOTE_FAILED', message: error.message });
   }
 });
 
