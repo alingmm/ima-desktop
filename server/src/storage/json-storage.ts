@@ -16,6 +16,7 @@ export interface TableSchemas {
   video_tasks: VideoTaskRecord;
   search_history: SearchHistoryRecord;
   notes: NoteRecord;
+  memories: MemoryRecord;
   tracking_projects: TrackingProjectRecord;
   tracking_runs: TrackingRunRecord;
 }
@@ -154,7 +155,19 @@ export interface NoteRecord {
   updated_at: string;
 }
 
-export type TrackingTaskType = 'tracking';
+export type MemoryCategory = '偏好' | '事实' | '结论' | '任务';
+
+export interface MemoryRecord {
+  id: string;
+  user_id: string;
+  content: string;
+  category: MemoryCategory;
+  tags?: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export type TrackingTaskType = 'tracking' | 'goal';
 export type TrackingFrequency = 'hourly' | 'daily' | 'weekly' | 'custom';
 export type TrackingPermission = 'SEARCH' | 'LLM' | 'WRITE' | 'NOTIFY';
 export type RunStatus = 'success' | 'failed' | 'skipped' | 'running';
@@ -187,6 +200,7 @@ export interface TrackingRunRecord {
   summary?: string;
   items_found?: number;
   duration_ms?: number;
+  process_log?: string[];
 }
 
 // ========== JSON File Storage ==========

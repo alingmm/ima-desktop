@@ -19,6 +19,7 @@ export interface TaskResult {
   summary?: string;
   briefing_note_id?: string;
   items_found?: number;
+  process_log?: string[];
 }
 
 export interface TaskExecutor {

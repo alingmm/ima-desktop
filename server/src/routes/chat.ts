@@ -7,6 +7,7 @@ import {
   DocumentChunkRecord, selectOne,
 } from '../storage/json-storage';
 import { chatCompletion, streamChatCompletion, createEmbedding, cosineSimilarity, API_ERRORS } from '../services/ai';
+import { recallMemories, extractMemoryFromConversation } from '../services/memory';
 import { loadConfig } from '../config';
 import { splitTextIntoChunks } from '../utils/text';
 
@@ -128,6 +129,25 @@ router.post('/stream', authMiddleware, async (req: AuthRequest, res) => {
   }
   formattedMessages.push(...messages);
 
+  // 记忆召回：从用户上一句提取关键词，把匹配的记忆注入上下文
+  try {
+    const lastUser = [...messages].filter((m) => m.role === 'user').pop();
+    if (lastUser) {
+      const recalled = recallMemories(req.userId!, lastUser.content, 5);
+      if (recalled.length > 0) {
+        const memText = recalled
+          .map((m) => `- （${m.category}）${m.content}`)
+          .join('\n');
+        formattedMessages.push({
+          role: 'system',
+          content: `以下是与用户相关的长期记忆，请在与用户交流时自然地记住并参考这些信息（若与当前问题无关可忽略）：\n${memText}`,
+        });
+      }
+    }
+  } catch (e) {
+    // 记忆召回失败不影响对话
+  }
+
   // Set SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -144,6 +164,17 @@ router.post('/stream', authMiddleware, async (req: AuthRequest, res) => {
         res.write(`data: ${JSON.stringify({ content: text })}\n\n`);
       },
       onDone: async (content: string) => {
+        // 自动记忆：从本次对话提炼长期值得记住的信息（异步，不阻塞）
+        const lastUser = [...messages].filter((m) => m.role === 'user').pop();
+        if (lastUser && content) {
+          setTimeout(() => {
+            extractMemoryFromConversation(
+              req.userId!,
+              lastUser.content,
+              content,
+            ).catch(() => {});
+          }, 0);
+        }
         // 保存消息
         if (conversation_id && content) {
           try {

@@ -487,3 +487,22 @@ class EventSourcePolyfill {
     this.controller.abort();
   }
 }
+
+// 记忆 APIs
+export const memoryApi = {
+  getMemories: (q?: string) => {
+    const query = q ? `?q=${encodeURIComponent(q)}` : '';
+    return request<{ memories: any[] }>(`/memories${query}`);
+  },
+
+  createMemory: (data: { content: string; category?: string; tags?: string[] }) =>
+    request<{ memory: any }>('/memories', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  deleteMemory: (id: string) =>
+    request<{ success: boolean }>(`/memories/${id}`, {
+      method: 'DELETE',
+    }),
+};

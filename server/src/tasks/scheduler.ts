@@ -22,6 +22,7 @@ import {
   TaskResult,
 } from './registry';
 import { createTrackingExecutor } from './tracking-executor';
+import { createGoalExecutor } from './goal-executor';
 
 // 执行中的项目 id 集合（防止并发）
 const runningProjects = new Set<string>();
@@ -33,6 +34,7 @@ let initialized = false;
 
 // 注册内建任务类型
 registerTaskExecutor('tracking', () => createTrackingExecutor());
+registerTaskExecutor('goal', () => createGoalExecutor());
 
 // 根据频率计算下次执行时间
 export function getNextRunTime(
@@ -207,6 +209,7 @@ export async function runProject(
         briefing_note_id: result.briefing_note_id,
         items_found: result.items_found,
         duration_ms: duration,
+        process_log: result.process_log,
       });
       updateById('tracking_projects', projectId, {
         last_run_at: new Date().toISOString(),

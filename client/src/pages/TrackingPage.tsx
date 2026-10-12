@@ -20,6 +20,7 @@ import {
   EyeOff,
   AlertCircle,
   Sparkles,
+  Target,
 } from 'lucide-react';
 import { trackingApi, notesApi } from '../api';
 import { showApiError, useToast } from '../components/Toast';
@@ -52,6 +53,7 @@ interface TrackingRun {
   summary?: string;
   items_found?: number;
   duration_ms?: number;
+  process_log?: string[];
 }
 
 const PERMISSION_CONFIG: {
@@ -129,6 +131,7 @@ export default function TrackingPage() {
   const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
 
   // 新建项目表单状态
+  const [formTaskType, setFormTaskType] = useState<'tracking' | 'goal'>('tracking');
   const [formName, setFormName] = useState('');
   const [formTopic, setFormTopic] = useState('');
   const [formFrequency, setFormFrequency] = useState<TrackingFrequency>('daily');
@@ -181,6 +184,7 @@ export default function TrackingPage() {
 
   const handleCreateClick = () => {
     setEditingProject(null);
+    setFormTaskType('tracking');
     setFormName('');
     setFormTopic('');
     setFormFrequency('daily');
@@ -195,7 +199,7 @@ export default function TrackingPage() {
       return;
     }
     if (!formTopic.trim()) {
-      toast.warning('请输入追踪主题');
+      toast.warning(formTaskType === 'goal' ? '请输入目标描述' : '请输入追踪主题');
       return;
     }
 
@@ -210,6 +214,7 @@ export default function TrackingPage() {
     const missing = required.filter((p) => !formPermissions.includes(p));
     if (missing.length > 0) {
       setPendingProject({
+        task_type: formTaskType,
         name: formName,
         topic: formTopic,
         frequency: formFrequency,
@@ -228,6 +233,7 @@ export default function TrackingPage() {
     try {
       setSubmitting(true);
       const data = pendingProject || {
+        task_type: formTaskType,
         name: formName,
         topic: formTopic,
         frequency: formFrequency,
@@ -236,7 +242,7 @@ export default function TrackingPage() {
       };
 
       const res = await trackingApi.createProject(data);
-      toast.success('追踪任务创建成功');
+      toast.success(formTaskType === 'goal' ? '目标任务创建成功' : '追踪任务创建成功');
       setProjects([res.project, ...projects]);
       setSelectedId(res.project.id);
       setShowPermissionModal(false);
@@ -264,6 +270,7 @@ export default function TrackingPage() {
     setFormPermissions(perms);
     if (pendingProject) {
       pendingProject.permissions = perms;
+      if (!pendingProject.task_type) pendingProject.task_type = formTaskType;
     }
     doCreateProject();
   };
@@ -314,6 +321,7 @@ export default function TrackingPage() {
   // 打开编辑弹窗，预填当前项目信息
   const handleEdit = (project: TrackingProject) => {
     setEditingProject(project);
+    setFormTaskType(project.task_type === 'goal' ? 'goal' : 'tracking');
     setFormName(project.name);
     setFormTopic(project.topic);
     setFormFrequency(project.frequency === 'hourly' || project.frequency === 'daily' || project.frequency === 'weekly' || project.frequency === 'custom' ? project.frequency : 'daily');
@@ -388,10 +396,10 @@ export default function TrackingPage() {
         <div>
           <h1 className="text-xl font-semibold flex items-center gap-2">
             <Activity size={22} className="text-purple-400" />
-            话题追踪
+            任务中心
           </h1>
           <p className="text-sm text-[var(--color-text-secondary)] mt-1">
-            自动追踪你关心的话题，定时生成情报简报
+            话题追踪与自主执行(Agent)，定时为你收集情报、完成目标
           </p>
         </div>
         <button
@@ -399,7 +407,7 @@ export default function TrackingPage() {
           className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg font-medium flex items-center gap-2 hover:opacity-90 transition-opacity"
         >
           <Plus size={18} />
-          新建追踪
+          新建任务
         </button>
       </div>
 
@@ -443,6 +451,12 @@ export default function TrackingPage() {
                           }`}
                         />
                         <h3 className="font-medium truncate text-sm">{project.name}</h3>
+                        {project.task_type === 'goal' && (
+                          <span className="flex-shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-0.5">
+                            <Target size={10} />
+                            Agent
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-[var(--color-text-muted)] mt-1 truncate">
                         {project.topic}
@@ -517,9 +531,19 @@ export default function TrackingPage() {
               <div className="bg-[var(--color-card-bg)] rounded-xl p-5 mb-5 border border-[var(--color-border)]">
                 <div className="flex items-start justify-between mb-3">
                   <div>
-                    <h2 className="text-lg font-semibold">{selectedProject.name}</h2>
+                    <h2 className="text-lg font-semibold flex items-center gap-2">
+                      {selectedProject.name}
+                      {selectedProject.task_type === 'goal' && (
+                        <span className="px-2 py-0.5 rounded-full text-[11px] bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1">
+                          <Target size={11} />
+                          自主执行 Agent
+                        </span>
+                      )}
+                    </h2>
                     <p className="text-sm text-[var(--color-text-secondary)] mt-1">
-                      追踪主题：{selectedProject.topic}
+                      {selectedProject.task_type === 'goal'
+                        ? `目标：${selectedProject.topic}`
+                        : `追踪主题：${selectedProject.topic}`}
                     </p>
                   </div>
                   <span
@@ -653,10 +677,27 @@ export default function TrackingPage() {
                               </p>
                             )}
 
-                            {run.items_found !== undefined && run.status === 'success' && (
+                            {run.items_found !== undefined && run.status === 'success' && selectedProject.task_type !== 'goal' && (
                               <p className="text-xs text-[var(--color-text-muted)] mt-1">
                                 找到 {run.items_found} 条相关信息
                               </p>
+                            )}
+
+                            {run.process_log && run.process_log.length > 0 && selectedProject.task_type === 'goal' && (
+                              <div className="mt-2 pt-2 border-t border-[var(--color-border)]">
+                                <div className="text-xs text-[var(--color-text-muted)] mb-1.5 flex items-center gap-1.5">
+                                  <Sparkles size={12} className="text-purple-400" />
+                                  执行过程
+                                </div>
+                                <div className="space-y-1">
+                                  {run.process_log.map((line, i) => (
+                                    <div key={i} className="text-xs text-[var(--color-text-secondary)] flex gap-2">
+                                      <span className="text-[var(--color-text-muted)] flex-shrink-0">{i + 1}.</span>
+                                      <span className="break-all">{line}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
                             )}
                           </div>
 
@@ -695,7 +736,13 @@ export default function TrackingPage() {
           <div className="bg-[var(--color-card-bg)] rounded-xl w-full max-w-lg mx-4 border border-[var(--color-border)] shadow-2xl">
             <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)]">
               <h2 className="text-lg font-semibold">
-                {editingProject ? '编辑追踪任务' : '新建追踪任务'}
+                {editingProject
+                  ? formTaskType === 'goal'
+                    ? '编辑目标任务'
+                    : '编辑追踪任务'
+                  : formTaskType === 'goal'
+                  ? '新建目标任务'
+                  : '新建追踪任务'}
               </h2>
               <button
                 onClick={handleCloseCreateModal}
@@ -706,6 +753,47 @@ export default function TrackingPage() {
             </div>
 
             <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
+              {/* 任务类型（编辑时不可切换） */}
+              {!editingProject && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">任务类型</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => setFormTaskType('tracking')}
+                      className={`p-3 rounded-lg border text-left transition-colors ${
+                        formTaskType === 'tracking'
+                          ? 'border-blue-500 bg-blue-500/10'
+                          : 'border-[var(--color-border)] hover:border-[var(--color-text-muted)]'
+                      }`}
+                    >
+                      <div className="text-sm font-medium flex items-center gap-1.5">
+                        <Activity size={14} className="text-blue-400" />
+                        话题追踪
+                      </div>
+                      <div className="text-xs text-[var(--color-text-muted)] mt-1">
+                        定时搜索并整理感兴趣话题的动态简报
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => setFormTaskType('goal')}
+                      className={`p-3 rounded-lg border text-left transition-colors ${
+                        formTaskType === 'goal'
+                          ? 'border-purple-500 bg-purple-500/10'
+                          : 'border-[var(--color-border)] hover:border-[var(--color-text-muted)]'
+                      }`}
+                    >
+                      <div className="text-sm font-medium flex items-center gap-1.5">
+                        <Target size={14} className="text-purple-400" />
+                        目标执行(自主Agent)
+                      </div>
+                      <div className="text-xs text-[var(--color-text-muted)] mt-1">
+                        自主规划、搜索、总结并完成任务目标
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* 任务名称 */}
               <div>
                 <label className="block text-sm font-medium mb-2">任务名称</label>
@@ -713,18 +801,24 @@ export default function TrackingPage() {
                   type="text"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
-                  placeholder="例如：AI 行业动态追踪"
+                  placeholder={formTaskType === 'goal' ? '例如：调研 AI 视频生成工具' : '例如：AI 行业动态追踪'}
                   className="w-full px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white placeholder-[var(--color-text-muted)] focus:outline-none focus:border-blue-500"
                 />
               </div>
 
-              {/* 追踪主题 */}
+              {/* 追踪主题 或 目标描述 */}
               <div>
-                <label className="block text-sm font-medium mb-2">追踪主题 / 关键词</label>
+                <label className="block text-sm font-medium mb-2">
+                  {formTaskType === 'goal' ? '目标描述' : '追踪主题 / 关键词'}
+                </label>
                 <textarea
                   value={formTopic}
                   onChange={(e) => setFormTopic(e.target.value)}
-                  placeholder="输入你想追踪的话题，例如：生成式AI 最新进展"
+                  placeholder={
+                    formTaskType === 'goal'
+                      ? '描述你想达成的目标，例如：调研 2024 年 AI 编程工具排名、优缺点，并给我一份对比报告'
+                      : '输入你想追踪的话题，例如：生成式AI 最新进展'
+                  }
                   rows={3}
                   className="w-full px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white placeholder-[var(--color-text-muted)] focus:outline-none focus:border-blue-500 resize-none"
                 />

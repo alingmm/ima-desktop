@@ -7,9 +7,10 @@ import VideoPage from './pages/VideoPage';
 import SearchPage from './pages/SearchPage';
 import SettingsPage from './pages/SettingsPage';
 import TrackingPage from './pages/TrackingPage';
+import MemoryPage from './pages/MemoryPage';
 import { ToastProvider } from './components/Toast';
 
-export type PageType = 'chat' | 'knowledge' | 'notes' | 'tracking' | 'video' | 'search' | 'settings';
+export type PageType = 'chat' | 'knowledge' | 'notes' | 'tracking' | 'video' | 'search' | 'memory' | 'settings';
 
 function App() {
   const [currentPage, setCurrentPage] = useState<PageType>('chat');
@@ -37,6 +38,8 @@ function App() {
         return <VideoPage />;
       case 'search':
         return <SearchPage />;
+      case 'memory':
+        return <MemoryPage />;
       case 'settings':
         return <SettingsPage />;
       default:

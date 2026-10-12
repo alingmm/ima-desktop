@@ -9,6 +9,7 @@ import {
   Sparkles,
   StickyNote,
   Activity,
+  Brain,
 } from 'lucide-react';
 import type { PageType } from '../App';
 import { useState, useEffect } from 'react';
@@ -27,6 +28,7 @@ const navItems = [
   { id: 'tracking' as PageType, label: '追踪', icon: Activity },
   { id: 'video' as PageType, label: '视频生成', icon: Video },
   { id: 'search' as PageType, label: '联网搜索', icon: Search },
+  { id: 'memory' as PageType, label: '记忆', icon: Brain },
   { id: 'settings' as PageType, label: '设置', icon: Settings },
 ];
 
