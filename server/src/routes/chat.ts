@@ -317,6 +317,7 @@ router.post('/save-to-knowledge', authMiddleware, async (req: AuthRequest, res) 
     const doc = insertOne('documents', {
       id: docId,
       knowledge_base_id: baseId,
+      user_id,
       filename: `${title}.txt`,
       content_preview: content.slice(0, 500),
       chunk_count: 1,

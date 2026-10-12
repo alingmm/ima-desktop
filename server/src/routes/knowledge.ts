@@ -19,6 +19,13 @@ const router: import('express').Router = Router();
 const uploadDir = getUploadsDir();
 ensureDir(uploadDir);
 
+// 校验文档归属：优先按 doc.user_id；存量文档无 user_id 时回退按所属知识库的归属判断
+function isDocOwnedByUser(doc: DocumentRecord, userId: string): boolean {
+  if (doc.user_id) return doc.user_id === userId;
+  const kb = findById('knowledge_bases', doc.knowledge_base_id) as KnowledgeBaseRecord | undefined;
+  return !!kb && kb.user_id === userId;
+}
+
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     cb(null, uploadDir);
@@ -194,6 +201,7 @@ router.post('/bases/:id/upload', authMiddleware, upload.single('file'), async (r
     const doc = insertOne('documents', {
       id: docId,
       knowledge_base_id: baseId,
+      user_id: req.userId,
       filename: fileName,
       file_path: filePath,
       file_size: file.size,
@@ -266,7 +274,7 @@ router.get('/documents/:id/content', authMiddleware, async (req: AuthRequest, re
   try {
     const { id } = req.params;
     const doc = findById('documents', id) as DocumentRecord | undefined;
-    if (!doc || doc.user_id !== req.userId) {
+    if (!doc || !isDocOwnedByUser(doc, req.userId!)) {
       res.status(404).json({ error: 'Document not found' });
       return;
     }
@@ -286,7 +294,7 @@ router.patch('/documents/:id', authMiddleware, async (req: AuthRequest, res) => 
     const { content, filename } = req.body;
 
     const doc = findById('documents', id) as DocumentRecord | undefined;
-    if (!doc || doc.user_id !== req.userId) {
+    if (!doc || !isDocOwnedByUser(doc, req.userId!)) {
       res.status(404).json({ error: 'Document not found' });
       return;
     }
