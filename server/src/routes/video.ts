@@ -229,7 +229,7 @@ const SYSTEM_PROMPTS: Record<string, string> = {
 // Video creation assistant (streaming)
 router.post('/assist/stream', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const { topic, type = 'script' } = req.body;
+    const { topic, type = 'script', model } = req.body;
 
     if (!topic || !topic.trim()) {
       res.status(400).json({ error: 'Topic is required', message: '请输入视频主题或创意' });
@@ -267,7 +267,7 @@ router.post('/assist/stream', authMiddleware, async (req: AuthRequest, res) => {
           res.end();
         },
       },
-      { temperature: 0.8 }
+      { temperature: 0.8, model: model || undefined }
     );
   } catch (error: any) {
     const code = error.code || 'CHAT_ERROR';
@@ -283,7 +283,7 @@ router.post('/assist/stream', authMiddleware, async (req: AuthRequest, res) => {
 // Non-streaming version (for quick calls)
 router.post('/assist', authMiddleware, async (req: AuthRequest, res) => {
   try {
-    const { topic, type = 'script' } = req.body;
+    const { topic, type = 'script', model } = req.body;
 
     if (!topic || !topic.trim()) {
       res.status(400).json({ error: 'Topic is required', message: '请输入视频主题或创意' });
@@ -299,7 +299,7 @@ router.post('/assist', authMiddleware, async (req: AuthRequest, res) => {
     const systemPrompt = SYSTEM_PROMPTS[type] || SYSTEM_PROMPTS.script;
     const result = await chatCompletion(
       [{ role: 'system', content: systemPrompt }, { role: 'user', content: topic }],
-      { temperature: 0.8 }
+      { temperature: 0.8, model: model || undefined }
     );
 
     res.json({ content: result, type });

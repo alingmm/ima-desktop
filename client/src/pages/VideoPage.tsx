@@ -11,8 +11,11 @@ import {
   Scissors,
   ChevronDown,
   ChevronUp,
+  Settings as SettingsIcon,
+  ChevronsUpDown,
+  BrainCircuit,
 } from 'lucide-react';
-import { videoApi, notesApi } from '../api';
+import { videoApi, notesApi, settingsApi } from '../api';
 import { useToast, showApiError } from '../components/Toast';
 
 type AssistType = 'script' | 'storyboard' | 'copy' | 'plan';
@@ -40,6 +43,26 @@ function VideoPage() {
   const esRef = useRef<any>(null);
   const resultRef = useRef<HTMLDivElement>(null);
   const [showToolsGuide, setShowToolsGuide] = useState(true);
+  const [chatModel, setChatModel] = useState('');
+  const [apiConfigured, setApiConfigured] = useState(false);
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    settingsApi
+      .getSettings()
+      .then((res) => {
+        if (!active) return;
+        setChatModel(res.settings.chatModel || '');
+        setApiConfigured(res.settings.openaiApiKeyConfigured);
+      })
+      .catch(() => {
+        if (active) setApiConfigured(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -47,13 +70,17 @@ function VideoPage() {
     };
   }, []);
 
+  const goToSettings = () => {
+    window.dispatchEvent(new CustomEvent('navigate', { detail: 'settings' }));
+  };
+
   const handleGenerate = async () => {
     if (!topic.trim() || generating) return;
     setGenerating(true);
     setResult('');
 
     try {
-      const es = videoApi.assistStream({ topic: topic.trim(), type: assistType });
+      const es = videoApi.assistStream({ topic: topic.trim(), type: assistType, model: chatModel || undefined });
       esRef.current = es;
 
       es.onmessage = (e: MessageEvent) => {
@@ -173,6 +200,59 @@ function VideoPage() {
                   );
                 })}
               </div>
+            </div>
+
+            {/* Model Select */}
+            <div>
+              <label className="block text-sm font-medium text-[var(--color-text-secondary)] mb-2">
+                使用的对话模型
+              </label>
+              {apiConfigured ? (
+                <div className="relative">
+                  <button
+                    onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
+                    className="w-full flex items-center justify-between px-4 py-3 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-sm text-white hover:border-[var(--color-primary)]/50 transition-colors"
+                  >
+                    <span className="flex items-center gap-2 truncate">
+                      <BrainCircuit size={16} className="text-[var(--color-primary)] shrink-0" />
+                      <span className="truncate">{chatModel || '默认模型'}</span>
+                    </span>
+                    <ChevronsUpDown size={14} className="text-[var(--color-text-muted)] shrink-0" />
+                  </button>
+                  {modelDropdownOpen && (
+                    <div className="absolute z-20 mt-1 w-full bg-[var(--color-sidebar-bg)] border border-[var(--color-border)] rounded-lg shadow-xl overflow-hidden">
+                      {chatModel ? (
+                        <button
+                          onClick={() => {
+                            setChatModel(chatModel);
+                            setModelDropdownOpen(false);
+                          }}
+                          className="w-full px-4 py-2.5 text-sm text-white flex items-center justify-between hover:bg-[var(--color-hover-bg)]"
+                        >
+                          <span className="truncate">{chatModel}</span>
+                          <span className="text-xs text-[var(--color-primary)] shrink-0 ml-2">使用中</span>
+                        </button>
+                      ) : (
+                        <div className="px-4 py-2.5 text-sm text-[var(--color-text-muted)]">暂无可选模型</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="px-4 py-3 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg flex items-center justify-between gap-2">
+                  <span className="text-sm text-[var(--color-text-muted)]">未配置云端模型</span>
+                  <button
+                    onClick={goToSettings}
+                    className="flex items-center gap-1 text-xs text-[var(--color-primary)] hover:underline"
+                  >
+                    <SettingsIcon size={13} />
+                    去设置
+                  </button>
+                </div>
+              )}
+              <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                本页的脚本 / 分镜 / 文案 / 策划均由所选大模型生成，生成前请确保已在设置中配置 API Key
+              </p>
             </div>
 
             {/* Topic Input */}

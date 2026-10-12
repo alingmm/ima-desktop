@@ -2,7 +2,7 @@
   "name": "ai-workstation",
   "version": "1.0.0",
   "description": "IMA AI 工作台 - 智能助手平台",
-  "author": "IMA Team",
+  "author": "IMA 工作台团队",
   "license": "MIT",
   "private": true,
   "main": "dist-electron/main.js",

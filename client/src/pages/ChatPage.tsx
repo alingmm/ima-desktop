@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, ChevronDown, Copy, ThumbsUp, ThumbsDown, RefreshCw, Database, Plus, X, Check, Cpu } from 'lucide-react';
-import { chatApi, knowledgeApi, localModelApi } from '../api';
+import { Send, ChevronDown, Copy, ThumbsUp, ThumbsDown, RefreshCw, Database, Plus, X, Check, Cpu, Globe } from 'lucide-react';
+import { chatApi, knowledgeApi, localModelApi, searchApi } from '../api';
 import type { Message, Model, KnowledgeBase, OllamaModel } from '../types';
 import ReactMarkdown from 'react-markdown';
 import { useLocalSettings } from '../hooks/useLocalSettings';
@@ -25,6 +25,7 @@ function ChatPage() {
   const [selectedBaseId, setSelectedBaseId] = useState<string | null>(null);
   const [savingToKnowledge, setSavingToKnowledge] = useState(false);
   const [localModels, setLocalModels] = useState<OllamaModel[]>([]);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const { settings } = useLocalSettings();
 
   // Load models on mount
@@ -218,11 +219,46 @@ function ChatPage() {
       } else {
         // Cloud model streaming
         const controller = new AbortController();
+        let llmMessages = updatedMessages;
+        let sources: { title: string; url: string; snippet?: string }[] = [];
+
+        if (webSearchEnabled) {
+          try {
+            const searchRes = await searchApi.webSearch(input.trim(), { count: 5 });
+            sources = (searchRes.results || []).map((r: any) => ({
+              title: r.title || '',
+              url: r.url || '',
+              snippet: r.content || r.snippet || '',
+            }));
+            if (sources.length > 0) {
+              const contextLines = sources
+                .map(
+                  (s, i) =>
+                    `[${i + 1}] ${s.title}\n来源链接：${s.url}\n内容摘要：${s.snippet || '（无摘要）'}`
+                )
+                .join('\n\n');
+              llmMessages = [
+                ...updatedMessages,
+                {
+                  role: 'assistant' as const,
+                  content: `[搜索结果（来自联网搜索，供你整合参考）]\n${contextLines}\n\n请基于以上搜索到的信息，结合用户问题给出完整、有条理的回答，并在回答末尾标注信息来源于哪些链接。`,
+                },
+              ];
+            }
+          } catch (searchErr: any) {
+            // Expected: no key or failure → source list empty; LLM answers normally
+            const code = searchErr?.error || searchErr?.code;
+            if (code === 'SEARCH_API_NOT_CONFIGURED') {
+              showApiError({ error: 'SEARCH_API_NOT_CONFIGURED', message: '请先配置联网搜索 Key' }, toast);
+            }
+          }
+        }
+
         const response = await fetch('/api/chat/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            messages: updatedMessages,
+            messages: llmMessages,
             model: currentModel,
             conversation_id: convId,
           }),
@@ -268,6 +304,24 @@ function ChatPage() {
               }
             }
           }
+        }
+
+        // 若开启了联网搜索且有来源，把来源链接追加到回答末尾
+        if (webSearchEnabled && sources.length > 0) {
+          const sourcesText =
+            '\n\n---\n\n**信息来源：**\n' +
+            sources.map((s, i) => `${i + 1}. [${s.title}](${s.url})`).join('\n');
+          setMessages((prev) => {
+            const newMessages = [...prev];
+            const lastIdx = newMessages.length - 1;
+            if (newMessages[lastIdx]) {
+              newMessages[lastIdx] = {
+                role: 'assistant',
+                content: (newMessages[lastIdx].content || '') + sourcesText,
+              };
+            }
+            return newMessages;
+          });
         }
       }
     } catch (error: any) {
@@ -510,7 +564,20 @@ function ChatPage() {
               disabled={isStreaming}
             />
             <div className="flex items-center justify-between px-4 pb-3">
-              <div className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+              <div className="flex items-center gap-3 text-xs text-[var(--color-text-muted)]">
+                <button
+                  onClick={() => setWebSearchEnabled(!webSearchEnabled)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-colors ${
+                    webSearchEnabled
+                      ? 'bg-[var(--color-primary)]/10 border-[var(--color-primary)] text-[var(--color-primary)]'
+                      : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:border-[var(--color-primary)]/40'
+                  }`}
+                  title="开启后，发送时将先联网搜索相关内容，再把搜索结果作为参考交给模型整合，并标注信息来源"
+                >
+                  <Globe size={14} />
+                  <span>联网搜索</span>
+                  {webSearchEnabled && <Check size={13} />}
+                </button>
                 <span>当前模型：{getModelDisplayName(currentModel)}</span>
               </div>
               <button
