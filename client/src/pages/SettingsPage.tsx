@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Settings, User, Palette, Bell, Shield, HelpCircle, ChevronRight, Save, Cpu, RefreshCw, Download, CheckCircle, AlertCircle, Loader2, Key, Globe, Eye, EyeOff, Terminal, AppWindow, ScrollText, Play } from 'lucide-react';
-import { localModelApi, settingsApi, toolsApi } from '../api';
+import { Settings, User, Palette, Bell, Shield, HelpCircle, ChevronRight, Save, Cpu, RefreshCw, Download, CheckCircle, AlertCircle, Loader2, Key, Globe, Eye, EyeOff, Terminal, AppWindow, ScrollText, Play, Bot } from 'lucide-react';
+import { localModelApi, settingsApi, toolsApi, agentApi } from '../api';
 import type { OllamaModel } from '../types';
-import type { ToolActionType, ToolPolicyLevel, ToolExecutionLogItem } from '../api';
+import type { ToolActionType, ToolPolicyLevel, ToolExecutionLogItem, AgentPrivacySettings } from '../api';
 import { useLocalSettings } from '../hooks/useLocalSettings';
 import { useToast } from '../components/Toast';
 
-type SettingsSection = 'profile' | 'appearance' | 'models' | 'notifications' | 'tools' | 'security' | 'about';
+type SettingsSection = 'profile' | 'appearance' | 'models' | 'notifications' | 'tools' | 'agent' | 'security' | 'about';
 
 // OpenAI 兼容服务预设
 interface ServicePreset {
@@ -38,6 +38,7 @@ function SettingsPage() {
     { id: 'models' as SettingsSection, label: '模型偏好', icon: Settings },
     { id: 'notifications' as SettingsSection, label: '通知设置', icon: Bell },
     { id: 'tools' as SettingsSection, label: '外部调用', icon: Terminal },
+    { id: 'agent' as SettingsSection, label: '自主执行与隐私', icon: Bot },
     { id: 'security' as SettingsSection, label: '账号安全', icon: Shield },
     { id: 'about' as SettingsSection, label: '关于', icon: HelpCircle },
   ];
@@ -217,6 +218,9 @@ function SettingsPage() {
 
       case 'tools':
         return <ExternalToolsSettings />;
+
+      case 'agent':
+        return <AgentPrivacySettings />;
 
       case 'about':
         return (
@@ -1068,6 +1072,220 @@ function ExternalToolsSettings() {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ========== 自主执行与隐私（需求10）==========
+function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+        checked ? 'bg-blue-600' : 'bg-[var(--color-border)]'
+      } ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+          checked ? 'translate-x-6' : 'translate-x-1'
+        }`}
+      />
+    </button>
+  );
+}
+
+function AgentPrivacySettings() {
+  const { success: toastSuccess, error: toastError } = useToast();
+  const [settings, setSettings] = useState<AgentPrivacySettings | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [savingKey, setSavingKey] = useState('');
+  const [localModels, setLocalModels] = useState<string[]>([]);
+  const [localAvailable, setLocalAvailable] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [privRes, modelRes] = await Promise.all([
+          agentApi.getPrivacy(),
+          agentApi.getLocalModels(),
+        ]);
+        setSettings(privRes.settings);
+        setLocalModels(modelRes.models || []);
+        setLocalAvailable(modelRes.available);
+      } catch (e: any) {
+        toastError(e?.message || '加载自主执行设置失败');
+      } finally {
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const patch = async (p: Partial<AgentPrivacySettings>, key: string) => {
+    if (!settings) return;
+    const prev = settings;
+    setSettings({ ...settings, ...p });
+    setSavingKey(key);
+    try {
+      const res = await agentApi.savePrivacy(p);
+      setSettings(res.settings);
+      toastSuccess('设置已保存');
+    } catch (e: any) {
+      setSettings(prev);
+      toastError(e?.message || '保存失败，请重试');
+    } finally {
+      setSavingKey('');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20 text-[var(--color-text-muted)]">
+        <Loader2 className="animate-spin mr-2" size={18} /> 加载中…
+      </div>
+    );
+  }
+  if (!settings) return null;
+
+  const switches: Array<{
+    key: string;
+    title: string;
+    desc: string;
+    value: boolean;
+    patch: Partial<AgentPrivacySettings>;
+  }> = [
+    {
+      key: 'allow_web_search',
+      title: '允许联网搜索',
+      desc: '自主执行任务时可以上网搜索最新信息（通过 Tavily）。关闭后模型只能使用本地资料。',
+      value: settings.allow_web_search,
+      patch: { allow_web_search: !settings.allow_web_search },
+    },
+    {
+      key: 'allow_web_capture',
+      title: '允许抓取网页',
+      desc: '允许打开你给出的网页链接并提取正文。关闭后模型不能抓取任何网页内容。',
+      value: settings.allow_web_capture,
+      patch: { allow_web_capture: !settings.allow_web_capture },
+    },
+    {
+      key: 'allow_external_tools',
+      title: '允许调用外部软件',
+      desc: '允许任务打开本机应用或执行系统命令。具体每次是否执行，还受「外部调用」里的分级规则约束，高风险操作仍需你点确认。',
+      value: settings.allow_external_tools,
+      patch: { allow_external_tools: !settings.allow_external_tools },
+    },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+          <Bot size={20} className="text-blue-400" /> 自主执行与隐私
+        </h2>
+        <p className="text-sm text-[var(--color-text-muted)] mt-1">
+          控制追踪任务在「自己想办法完成目标」时，能使用哪些能力。所有笔记、知识库、记忆和执行记录都只存在本机，不会上传。
+        </p>
+      </div>
+
+      {/* 能力开关 */}
+      <div className="bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-xl divide-y divide-[var(--color-border)]">
+        {switches.map((s) => (
+          <div key={s.key} className="flex items-start justify-between gap-4 p-4">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-white">{s.title}</div>
+              <p className="text-xs text-[var(--color-text-muted)] mt-1 leading-relaxed">{s.desc}</p>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {savingKey === s.key && <Loader2 size={14} className="animate-spin text-[var(--color-text-muted)]" />}
+              <Toggle checked={s.value} onChange={() => patch(s.patch, s.key)} disabled={!!savingKey} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* 模型偏好 */}
+      <div className="bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-xl p-4 space-y-4">
+        <div>
+          <div className="text-sm font-medium text-white">执行模型偏好</div>
+          <p className="text-xs text-[var(--color-text-muted)] mt-1">
+            选择自主执行任务规划、思考时用哪个大脑。单个追踪任务仍可单独指定模型（优先于此设置）。
+          </p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={() => settings.model_preference !== 'default' && patch({ model_preference: 'default' }, 'model_preference')}
+            className={`text-left p-3 rounded-lg border transition-colors ${
+              settings.model_preference === 'default'
+                ? 'border-blue-500 bg-blue-500/10'
+                : 'border-[var(--color-border)] hover:border-[var(--color-text-muted)]'
+            }`}
+          >
+            <div className="text-sm font-medium text-white flex items-center gap-1.5">
+              <Globe size={14} /> 跟随默认
+            </div>
+            <p className="text-xs text-[var(--color-text-muted)] mt-1">使用设置页配置的默认大模型（云端），效果通常更好。</p>
+          </button>
+          <button
+            type="button"
+            onClick={() => settings.model_preference !== 'local' && patch({ model_preference: 'local' }, 'model_preference')}
+            className={`text-left p-3 rounded-lg border transition-colors ${
+              settings.model_preference === 'local'
+                ? 'border-green-500 bg-green-500/10'
+                : 'border-[var(--color-border)] hover:border-[var(--color-text-muted)]'
+            }`}
+          >
+            <div className="text-sm font-medium text-white flex items-center gap-1.5">
+              <Cpu size={14} /> 强制本地模型
+            </div>
+            <p className="text-xs text-[var(--color-text-muted)] mt-1">
+              全程用本机 Ollama 模型思考，数据不出本机、更私密；需要本机已启动 Ollama。
+            </p>
+          </button>
+        </div>
+
+        {settings.model_preference === 'local' && (
+          <div className="rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] p-3 space-y-2">
+            {localAvailable === false && (
+              <div className="flex items-start gap-2 text-xs text-amber-400">
+                <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+                <span>现在连不上本机 Ollama。请先启动 Ollama 并下载一个模型，否则任务无法运行。</span>
+              </div>
+            )}
+            {localAvailable === true && localModels.length > 0 && (
+              <div>
+                <label className="text-xs text-[var(--color-text-muted)]">本地模型（不选则自动用第一个）</label>
+                <select
+                  value={settings.local_model || ''}
+                  onChange={(e) => patch({ local_model: e.target.value }, 'local_model')}
+                  className="mt-1 w-full bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                >
+                  <option value="">自动选择（{localModels[0]}）</option>
+                  {localModels.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {localAvailable === true && localModels.length === 0 && (
+              <div className="flex items-start gap-2 text-xs text-amber-400">
+                <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+                <span>Ollama 已启动，但还没有下载任何模型，请到「模型偏好」页下载一个本地模型。</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-start gap-2 rounded-lg bg-blue-500/10 border border-blue-500/20 p-3 text-xs text-blue-200">
+        <Shield size={14} className="flex-shrink-0 mt-0.5" />
+        <span>
+          隐私说明：任务过程中的搜索需要走外部搜索服务；抓取网页会直接访问对应网站；本地模型、知识库、笔记与记忆全部在本机运行和保存。关闭联网开关即可让任务完全离线工作。
+        </span>
       </div>
     </div>
   );

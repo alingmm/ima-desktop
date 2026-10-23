@@ -749,3 +749,43 @@ export const toolsApi = {
       },
     ),
 };
+
+// ========== 自主执行与隐私（需求10）==========
+export interface AgentPrivacySettings {
+  id?: string;
+  user_id?: string;
+  allow_web_search: boolean;
+  allow_web_capture: boolean;
+  allow_external_tools: boolean;
+  model_preference: 'default' | 'local';
+  local_model?: string;
+}
+
+export interface AgentTraceStats {
+  search_count?: number;
+  capture_count?: number;
+  knowledge_search_count?: number;
+  note_count?: number;
+  knowledge_write_count?: number;
+  memory_count?: number;
+  open_app_count?: number;
+  command_count?: number;
+  model_source?: 'cloud' | 'local';
+  local_model?: string;
+}
+
+export const agentApi = {
+  /** 读取自主执行与隐私设置 */
+  getPrivacy: () => request<{ settings: AgentPrivacySettings }>('/agent/privacy'),
+
+  /** 保存自主执行与隐私设置 */
+  savePrivacy: (patch: Partial<AgentPrivacySettings>) =>
+    request<{ settings: AgentPrivacySettings }>('/agent/privacy', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+
+  /** 查询本地模型可用性与已安装模型 */
+  getLocalModels: () =>
+    request<{ available: boolean; models: string[]; url?: string; error?: string }>('/agent/local-models'),
+};

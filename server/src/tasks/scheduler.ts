@@ -213,6 +213,7 @@ export async function runProject(
           goal_state: result.goal_state,
           awaiting_confirm: true,
           confirm_prompt: result.confirm_prompt,
+          trace: result.trace,
         });
         updateById('tracking_projects', projectId, {
           last_run_at: new Date().toISOString(),
@@ -234,6 +235,7 @@ export async function runProject(
         duration_ms: duration,
         process_log: result.process_log,
         model_used: result.model_used,
+        trace: result.trace,
       });
       updateById('tracking_projects', projectId, {
         last_run_at: new Date().toISOString(),
@@ -254,6 +256,7 @@ export async function runProject(
         duration_ms: duration,
         process_log: result.process_log,
         model_used: result.model_used,
+        trace: result.trace,
       });
 
       return {

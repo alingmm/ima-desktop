@@ -3,6 +3,7 @@
 
 import {
   GoalStateSnapshot,
+  AgentTraceStats,
   TrackingPermission,
   TrackingProjectRecord,
   TrackingRunRecord,
@@ -28,6 +29,7 @@ export interface TaskResult {
   paused?: boolean; // 是否暂停（撞上限/待确认/需用户输入）
   goal_state?: GoalStateSnapshot; // 暂停时的断点快照
   confirm_prompt?: string; // 暂停时给用户看的说明/问题
+  trace?: AgentTraceStats; // 本次执行轨迹统计（感知/执行分类计数 + 模型来源）
 }
 
 export interface TaskExecutor {

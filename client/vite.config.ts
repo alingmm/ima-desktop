@@ -24,4 +24,8 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    // 桌面端本地加载，主包含第三方运行时，体积偏大属预期；提高阈值避免噪音警告
+    chunkSizeWarningLimit: 1500,
+  },
 })

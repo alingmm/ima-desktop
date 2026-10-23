@@ -22,6 +22,7 @@ export interface TableSchemas {
   tool_policies: ToolPolicyRecord;
   tool_pending_approvals: ToolPendingApprovalRecord;
   tool_execution_logs: ToolExecutionLogRecord;
+  agent_privacy_settings: AgentPrivacySettingRecord;
 }
 
 export interface UserRecord {
@@ -95,6 +96,7 @@ export interface DocumentChunkRecord {
   id: string;
   document_id: string;
   knowledge_base_id: string;
+  user_id?: string;
   chunk_index: number;
   content: string;
   embedding: number[] | null;
@@ -186,6 +188,21 @@ export interface GoalStateSnapshot {
   final_answer: string;    // 当前已得结论
   model_used?: string;     // 使用的模型
   approved_actions?: string[]; // 本次执行中用户已批准的工具调用签名（批准后同签名放行）
+  trace?: AgentTraceStats; // 本次执行的感知/执行轨迹统计
+}
+
+// 自主执行轨迹统计（感知几次、执行什么、用的哪类模型）
+export interface AgentTraceStats {
+  search_count?: number;        // 联网搜索次数
+  capture_count?: number;       // 网页抓取次数
+  knowledge_search_count?: number; // 知识库检索次数
+  note_count?: number;          // 写入笔记次数
+  knowledge_write_count?: number; // 写入知识库次数
+  memory_count?: number;        // 记忆次数
+  open_app_count?: number;      // 打开应用次数
+  command_count?: number;       // 执行命令次数
+  model_source?: 'cloud' | 'local'; // 本次使用的模型来源
+  local_model?: string;         // 使用本地模型时的模型名
 }
 
 export interface TrackingProjectRecord {
@@ -223,6 +240,21 @@ export interface TrackingRunRecord {
   goal_state?: GoalStateSnapshot; // goal 任务断点快照（供断点续跑）
   awaiting_confirm?: boolean; // 是否暂停等待人工确认/纠偏
   confirm_prompt?: string; // 暂停时给用户看的说明/模型想问的问题
+  trace?: AgentTraceStats; // 本次执行轨迹统计（感知/执行分类计数 + 模型来源）
+}
+
+// ========== 自主执行与隐私设置（需求10）==========
+// 每个用户一条，控制 goal 自主执行链路的联网/抓取/外部软件与模型偏好
+export interface AgentPrivacySettingRecord {
+  id: string;
+  user_id: string;
+  allow_web_search: boolean;   // 是否允许联网搜索（Tavily）
+  allow_web_capture: boolean;  // 是否允许抓取网页正文
+  allow_external_tools: boolean; // 是否允许调用外部软件（与需求9分级规则联动）
+  model_preference: 'default' | 'local'; // 执行模型偏好：跟随默认 / 强制本地模型
+  local_model?: string;        // 强制本地时使用的 Ollama 模型名（空则取配置/自动探测）
+  created_at?: string;
+  updated_at?: string;
 }
 
 // ========== 外部工具执行（需求9）==========

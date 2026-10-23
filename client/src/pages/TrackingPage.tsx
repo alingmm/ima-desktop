@@ -27,6 +27,7 @@ import {
   MessageSquare,
 } from 'lucide-react';
 import { trackingApi, notesApi, chatApi } from '../api';
+import type { AgentTraceStats } from '../api';
 import { showApiError, useToast } from '../components/Toast';
 import { formatShortDateTime, formatDurationZh, formatDateTimeWithWeek } from '../utils/format';
 import type { ScheduleKind, ScheduleFormValue } from '../utils/cron';
@@ -64,6 +65,7 @@ interface GoalStateSnapshot {
   run_log: string[];
   final_answer: string;
   model_used?: string;
+  trace?: AgentTraceStats;
 }
 
 interface TrackingRun {
@@ -82,6 +84,7 @@ interface TrackingRun {
   goal_state?: GoalStateSnapshot;
   awaiting_confirm?: boolean;
   confirm_prompt?: string;
+  trace?: AgentTraceStats;
 }
 
 const PERMISSION_CONFIG: {
@@ -798,12 +801,45 @@ export default function TrackingPage() {
                                 </span>
                               )}
                               {run.model_used && (
-                                <span className="text-xs text-blue-400 flex items-center gap-1" title="本次执行使用的大模型">
+                                <span
+                                  className={`text-xs flex items-center gap-1 ${run.trace?.model_source === 'local' ? 'text-green-400' : 'text-blue-400'}`}
+                                  title={run.trace?.model_source === 'local' ? '本次使用本地模型运行，数据不出本机' : '本次使用云端模型'}
+                                >
                                   <Cpu size={11} />
                                   {run.model_used}
+                                  {run.trace?.model_source === 'local' && (
+                                    <span className="px-1 py-px rounded bg-green-500/15 text-[10px]">本地</span>
+                                  )}
                                 </span>
                               )}
                             </div>
+
+                            {run.trace && (() => {
+                              const t = run.trace!;
+                              const chips: Array<{ label: string; n?: number }> = [
+                                { label: '联网搜索', n: t.search_count },
+                                { label: '抓取网页', n: t.capture_count },
+                                { label: '知识库检索', n: t.knowledge_search_count },
+                                { label: '写入笔记', n: t.note_count },
+                                { label: '存入知识库', n: t.knowledge_write_count },
+                                { label: '记住信息', n: t.memory_count },
+                                { label: '打开应用', n: t.open_app_count },
+                                { label: '执行命令', n: t.command_count },
+                              ].filter((c) => (c.n || 0) > 0);
+                              if (chips.length === 0) return null;
+                              return (
+                                <div className="flex flex-wrap gap-1.5 mt-2">
+                                  {chips.map((c) => (
+                                    <span
+                                      key={c.label}
+                                      className="px-1.5 py-0.5 rounded-md bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[11px] text-[var(--color-text-secondary)]"
+                                    >
+                                      {c.label} × {c.n}
+                                    </span>
+                                  ))}
+                                </div>
+                              );
+                            })()}
 
                             {run.summary && (
                               <p className="text-sm text-[var(--color-text-secondary)] line-clamp-2 mt-1">
