@@ -156,6 +156,8 @@ export interface NoteRecord {
 }
 
 export type MemoryCategory = '偏好' | '事实' | '结论' | '任务';
+// 记忆来源：auto=对话自动提炼；manual=用户手动添加；chat=对话中「记住这条」提炼
+export type MemorySource = 'auto' | 'manual' | 'chat';
 
 export interface MemoryRecord {
   id: string;
@@ -163,6 +165,7 @@ export interface MemoryRecord {
   content: string;
   category: MemoryCategory;
   tags?: string[];
+  source?: MemorySource;
   created_at: string;
   updated_at: string;
 }

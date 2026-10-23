@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, ChevronDown, Copy, ThumbsUp, ThumbsDown, RefreshCw, Database, Plus, X, Check, Cpu, Globe, Paperclip, Loader2, FileText } from 'lucide-react';
-import { chatApi, knowledgeApi, localModelApi, searchApi, filesApi } from '../api';
+import { Send, ChevronDown, Copy, ThumbsUp, ThumbsDown, RefreshCw, Database, Plus, X, Check, Cpu, Globe, Paperclip, Loader2, FileText, Brain } from 'lucide-react';
+import { chatApi, knowledgeApi, localModelApi, searchApi, filesApi, memoryApi } from '../api';
 import type { Message, Model, KnowledgeBase, OllamaModel, PendingAttachment, ChatContentPart } from '../types';
 import ReactMarkdown from 'react-markdown';
 import { useLocalSettings } from '../hooks/useLocalSettings';
@@ -43,6 +43,7 @@ function ChatPage() {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attaching, setAttaching] = useState(false);
   const attachInputRef = useRef<HTMLInputElement>(null);
+  const [rememberingIdx, setRememberingIdx] = useState<number | null>(null);
 
   const readFileAsDataURL = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
@@ -207,6 +208,41 @@ function ChatPage() {
     setShowNewBaseInput(false);
     setShowKnowledgeModal(true);
     loadKnowledgeBases();
+  };
+
+  // 「记住这条」：把当前这一轮问答提炼为个性化记忆
+  const handleRememberThis = async (msgIdx: number) => {
+    const msg = messages[msgIdx];
+    if (!msg || msg.role !== 'assistant') return;
+    const prevMsg = msgIdx > 0 ? messages[msgIdx - 1] : null;
+    const userText = prevMsg?.role === 'user' ? contentToPlain(prevMsg.content) : '';
+    const assistantText = contentToPlain(msg.content);
+    if (!userText.trim() || !assistantText.trim()) {
+      toast.warning('这一轮对话内容为空，没什么可记住的');
+      return;
+    }
+
+    try {
+      setRememberingIdx(msgIdx);
+      const res = await memoryApi.extractFromChat({
+        user_text: userText,
+        assistant_text: assistantText,
+      });
+      if (res.saved && res.memory) {
+        toast.success(`已记住：${res.memory.content}`);
+      } else if (res.reason === 'duplicate') {
+        toast.info('这条信息我之前已经记住啦');
+      } else if (res.reason === 'none') {
+        toast.info('这轮对话里没有值得长期记住的信息');
+      } else {
+        toast.warning('提炼记忆失败，请稍后再试');
+      }
+    } catch (err: any) {
+      console.error('Remember this failed:', err);
+      showApiError(err, toast);
+    } finally {
+      setRememberingIdx(null);
+    }
   };
 
   const handleSaveToKnowledge = async () => {
@@ -717,6 +753,21 @@ function ChatPage() {
                         <Database size={14} />
                         <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-[var(--color-card-bg)] border border-[var(--color-border)] px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
                           加入知识库
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => handleRememberThis(idx)}
+                        disabled={rememberingIdx === idx}
+                        className="p-1 hover:bg-[var(--color-sidebar-hover)] rounded text-[var(--color-text-muted)] hover:text-amber-400 transition-colors group disabled:opacity-50"
+                        title="记住这条"
+                      >
+                        {rememberingIdx === idx ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <Brain size={14} />
+                        )}
+                        <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-[var(--color-card-bg)] border border-[var(--color-border)] px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+                          记住这条
                         </span>
                       </button>
                     </div>

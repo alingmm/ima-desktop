@@ -543,9 +543,21 @@ export const memoryApi = {
       body: JSON.stringify(data),
     }),
 
+  updateMemory: (id: string, data: { content?: string; category?: string; tags?: string[] }) =>
+    request<{ memory: any }>(`/memories/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
   deleteMemory: (id: string) =>
     request<{ success: boolean }>(`/memories/${id}`, {
       method: 'DELETE',
+    }),
+
+  extractFromChat: (data: { user_text: string; assistant_text: string }) =>
+    request<{ saved: boolean; reason: string; memory: any }>('/memories/extract-from-chat', {
+      method: 'POST',
+      body: JSON.stringify(data),
     }),
 };
 
