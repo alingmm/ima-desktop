@@ -8,6 +8,7 @@ import {
   orderBy,
   TrackingProjectRecord,
   TrackingPermission,
+  GoalStateSnapshot,
 } from '../storage/json-storage';
 import { authMiddleware } from '../middleware/auth';
 import {
@@ -73,7 +74,7 @@ router.get('/projects/:id', async (req: Request, res: Response) => {
 router.post('/projects', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId;
-    const { name, topic, frequency, cron_expression, task_type, permissions, model } =
+    const { name, topic, frequency, cron_expression, task_type, permissions, model, max_rounds } =
       req.body;
 
     if (!name || !name.trim()) {
@@ -109,6 +110,7 @@ router.post('/projects', async (req: Request, res: Response) => {
       enabled: true,
       permissions: perms,
       model: model && model.trim() ? model.trim() : undefined,
+      max_rounds: max_rounds && Number(max_rounds) > 0 ? Number(max_rounds) : undefined,
       created_at: now,
       updated_at: now,
     });
@@ -135,7 +137,7 @@ router.patch('/projects/:id', async (req: Request, res: Response) => {
     }
 
     const update: Partial<TrackingProjectRecord> = {};
-    const fields = ['name', 'topic', 'frequency', 'cron_expression', 'enabled', 'permissions', 'model'] as const;
+    const fields = ['name', 'topic', 'frequency', 'cron_expression', 'enabled', 'permissions', 'model', 'max_rounds'] as const;
 
     for (const field of fields) {
       if (req.body[field] !== undefined) {
@@ -235,7 +237,18 @@ router.post('/projects/:id/run', async (req: Request, res: Response) => {
       return res.status(404).json({ error: '任务不存在' });
     }
 
-    const result = await runProject(req.params.id, 'manual');
+    // 断点续跑：resume_run_id 指定上次暂停的 run，取其断点快照；guidance 为用户补充/纠偏的指令
+    const { resume_run_id, guidance } = req.body || {};
+    let resumeState: GoalStateSnapshot | undefined;
+    if (resume_run_id) {
+      const prevRun = findById('tracking_runs', String(resume_run_id));
+      if (prevRun && prevRun.user_id === userId && prevRun.project_id === req.params.id && prevRun.goal_state) {
+        resumeState = prevRun.goal_state;
+      }
+    }
+    const userGuidance = typeof guidance === 'string' ? guidance : undefined;
+
+    const result = await runProject(req.params.id, 'manual', { resumeState, userGuidance });
 
     if (!result.success) {
       return res.status(400).json(result);

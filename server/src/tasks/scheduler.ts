@@ -14,6 +14,7 @@ import {
   TrackingProjectRecord,
   TrackingRunRecord,
   TrackingFrequency,
+  GoalStateSnapshot,
 } from '../storage/json-storage';
 import {
   getTaskExecutor,
@@ -135,6 +136,7 @@ export function rescheduleProject(projectId: string) {
 export async function runProject(
   projectId: string,
   trigger: 'manual' | 'scheduled' = 'manual',
+  options?: { resumeState?: GoalStateSnapshot; userGuidance?: string },
 ): Promise<{
   success: boolean;
   error_code?: string;
@@ -142,6 +144,8 @@ export async function runProject(
   run_id?: string;
   summary?: string;
   briefing_note_id?: string;
+  paused?: boolean;
+  confirm_prompt?: string;
 }> {
   if (runningProjects.has(projectId)) {
     return {
@@ -197,12 +201,38 @@ export async function runProject(
     const result: TaskResult = await executor.execute({
       userId: project.user_id,
       project,
+      resumeState: options?.resumeState,
+      userGuidance: options?.userGuidance,
     });
 
     const duration = Date.now() - startTime;
 
     if (result.success) {
-      // 成功
+      if (result.paused) {
+        // 暂停：撞上限/待确认/需用户输入，存断点快照供「继续执行」
+        updateById('tracking_runs', run.id, {
+          status: 'paused',
+          summary: result.summary,
+          items_found: result.items_found,
+          duration_ms: duration,
+          process_log: result.process_log,
+          model_used: result.model_used,
+          goal_state: result.goal_state,
+          awaiting_confirm: true,
+          confirm_prompt: result.confirm_prompt,
+        });
+        updateById('tracking_projects', projectId, {
+          last_run_at: new Date().toISOString(),
+        });
+        return {
+          success: true,
+          run_id: run.id,
+          summary: result.summary,
+          paused: true,
+          confirm_prompt: result.confirm_prompt,
+        };
+      }
+      // 成功完成
       updateById('tracking_runs', run.id, {
         status: 'success',
         summary: result.summary,

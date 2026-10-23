@@ -173,7 +173,16 @@ export interface MemoryRecord {
 export type TrackingTaskType = 'tracking' | 'goal';
 export type TrackingFrequency = 'hourly' | 'daily' | 'weekly' | 'custom';
 export type TrackingPermission = 'SEARCH' | 'LLM' | 'WRITE' | 'NOTIFY';
-export type RunStatus = 'success' | 'failed' | 'skipped' | 'running';
+export type RunStatus = 'success' | 'failed' | 'skipped' | 'running' | 'paused';
+
+// 目标执行（goal）断点快照：撞上限/待确认时保存，供「继续执行」断点续跑
+export interface GoalStateSnapshot {
+  round: number;           // 已执行到第几轮
+  step_summary: string;    // 已执行动作与结果摘要（供模型续跑参考）
+  run_log: string[];       // 过程日志
+  final_answer: string;    // 当前已得结论
+  model_used?: string;     // 使用的模型
+}
 
 export interface TrackingProjectRecord {
   id: string;
@@ -186,6 +195,7 @@ export interface TrackingProjectRecord {
   enabled: boolean;
   permissions: TrackingPermission[];
   model?: string; // 指定使用的大模型，空则用设置页默认模型
+  max_rounds?: number; // 目标执行单次最大轮数，默认 10
   last_run_at?: string;
   next_run_at?: string;
   created_at: string;
@@ -206,6 +216,9 @@ export interface TrackingRunRecord {
   duration_ms?: number;
   process_log?: string[];
   model_used?: string; // 本次执行实际使用的大模型
+  goal_state?: GoalStateSnapshot; // goal 任务断点快照（供断点续跑）
+  awaiting_confirm?: boolean; // 是否暂停等待人工确认/纠偏
+  confirm_prompt?: string; // 暂停时给用户看的说明/模型想问的问题
 }
 
 // ========== JSON File Storage ==========

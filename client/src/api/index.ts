@@ -395,9 +395,10 @@ export const trackingApi = {
   getRuns: (projectId: string) =>
     request<{ runs: any[] }>(`/tracking/projects/${projectId}/runs`),
 
-  runProject: (projectId: string) =>
+  runProject: (projectId: string, opts?: { resume_run_id?: string; guidance?: string }) =>
     request<any>(`/tracking/projects/${projectId}/run`, {
       method: 'POST',
+      body: JSON.stringify(opts || {}),
     }),
 };
 

@@ -22,6 +22,9 @@ import {
   Sparkles,
   Target,
   Cpu,
+  RefreshCw,
+  PauseCircle,
+  MessageSquare,
 } from 'lucide-react';
 import { trackingApi, notesApi, chatApi } from '../api';
 import { showApiError, useToast } from '../components/Toast';
@@ -39,16 +42,25 @@ interface TrackingProject {
   enabled: boolean;
   permissions: TrackingPermission[];
   model?: string;
+  max_rounds?: number;
   last_run_at?: string;
   next_run_at?: string;
   created_at: string;
+}
+
+interface GoalStateSnapshot {
+  round: number;
+  step_summary: string;
+  run_log: string[];
+  final_answer: string;
+  model_used?: string;
 }
 
 interface TrackingRun {
   id: string;
   project_id: string;
   run_at: string;
-  status: 'success' | 'failed' | 'running' | 'skipped';
+  status: 'success' | 'failed' | 'running' | 'skipped' | 'paused';
   error_message?: string;
   error_code?: string;
   briefing_note_id?: string;
@@ -57,6 +69,9 @@ interface TrackingRun {
   duration_ms?: number;
   process_log?: string[];
   model_used?: string;
+  goal_state?: GoalStateSnapshot;
+  awaiting_confirm?: boolean;
+  confirm_prompt?: string;
 }
 
 const PERMISSION_CONFIG: {
@@ -145,7 +160,13 @@ export default function TrackingPage() {
     'WRITE',
   ]);
   const [formModel, setFormModel] = useState(''); // 空表示跟随默认模型
+  const [formMaxRounds, setFormMaxRounds] = useState(''); // 空表示默认 10 轮
   const [submitting, setSubmitting] = useState(false);
+
+  // 断点续跑 / 互动纠偏：正在输入纠偏指令的 run、纠偏文本、续跑中标记
+  const [guidanceDrafts, setGuidanceDrafts] = useState<Record<string, string>>({});
+  const [resumingRunId, setResumingRunId] = useState<string | null>(null);
+  const [terminatedRunIds, setTerminatedRunIds] = useState<Set<string>>(new Set());
 
   // 可选大模型列表（云端 + Ollama 本地）
   const [availableModels, setAvailableModels] = useState<{ id: string; label: string }[]>([]);
@@ -250,6 +271,7 @@ export default function TrackingPage() {
         cron_expression: formFrequency === 'custom' ? formCron : undefined,
         permissions: formPermissions,
         model: formModel,
+        max_rounds: formMaxRounds.trim() ? Number(formMaxRounds) : undefined,
       });
       setShowPermissionModal(true);
       setShowCreateModal(false);
@@ -270,6 +292,7 @@ export default function TrackingPage() {
         cron_expression: formFrequency === 'custom' ? formCron : undefined,
         permissions: formPermissions,
         model: formModel,
+        max_rounds: formMaxRounds.trim() ? Number(formMaxRounds) : undefined,
       };
 
       const res = await trackingApi.createProject(data);
@@ -326,7 +349,11 @@ export default function TrackingPage() {
       setRunningIds((prev) => new Set(prev).add(project.id));
       const result = await trackingApi.runProject(project.id);
       if (result.success) {
-        toast.success('执行完成');
+        if (result.paused) {
+          toast.info('任务已暂停，等你确认后继续', '已暂停');
+        } else {
+          toast.success('执行完成');
+        }
       } else if (result.error === 'PERMISSION_REQUIRED') {
         setPendingProject(project);
         setFormPermissions(project.permissions);
@@ -349,6 +376,37 @@ export default function TrackingPage() {
     }
   };
 
+  // 断点续跑：从暂停的 run 快照接着执行，可携带用户补充/纠偏指令
+  const handleResumeRun = async (project: TrackingProject, run: TrackingRun) => {
+    if (runningIds.has(project.id) || resumingRunId) return;
+    const guidance = (guidanceDrafts[run.id] || '').trim();
+    try {
+      setResumingRunId(run.id);
+      const result = await trackingApi.runProject(project.id, {
+        resume_run_id: run.id,
+        guidance: guidance || undefined,
+      });
+      if (result.success) {
+        if (result.paused) {
+          toast.info('任务又暂停了，可继续补充方向', '已暂停');
+        } else {
+          toast.success('继续执行完成');
+        }
+      } else {
+        toast.error(result.message || '执行失败');
+      }
+      // 旧的暂停卡片收起（已基于它续跑出新记录）
+      setTerminatedRunIds((prev) => new Set(prev).add(run.id));
+      setGuidanceDrafts((prev) => ({ ...prev, [run.id]: '' }));
+      loadRuns(project.id);
+      loadProjects();
+    } catch (e) {
+      showApiError(e, toast);
+    } finally {
+      setResumingRunId(null);
+    }
+  };
+
   // 打开编辑弹窗，预填当前项目信息
   const handleEdit = (project: TrackingProject) => {
     setEditingProject(project);
@@ -358,6 +416,7 @@ export default function TrackingPage() {
     setFormFrequency(project.frequency === 'hourly' || project.frequency === 'daily' || project.frequency === 'weekly' || project.frequency === 'custom' ? project.frequency : 'daily');
     setFormCron(project.cron_expression || '0 9 * * *');
     setFormModel(project.model || '');
+    setFormMaxRounds(project.max_rounds ? String(project.max_rounds) : '');
     setShowCreateModal(true);
   };
 
@@ -372,6 +431,7 @@ export default function TrackingPage() {
         frequency: formFrequency,
         cron_expression: formFrequency === 'custom' ? formCron : undefined,
         model: formModel, // 空字符串表示跟随默认模型
+        max_rounds: formMaxRounds.trim() ? Number(formMaxRounds) : undefined,
       };
       const res = await trackingApi.updateProject(editingProject.id, payload);
       setProjects(projects.map((p) => (p.id === editingProject.id ? res.project : p)));
@@ -701,11 +761,15 @@ export default function TrackingPage() {
                               {run.status === 'skipped' && (
                                 <AlertCircle size={16} className="text-yellow-500 flex-shrink-0" />
                               )}
-                              <span className="text-sm font-medium">
+                              {run.status === 'paused' && (
+                                <PauseCircle size={16} className="text-amber-500 flex-shrink-0" />
+                              )}
+                              <span className={`text-sm font-medium ${run.status === 'paused' ? 'text-amber-400' : ''}`}>
                                 {run.status === 'success' && '执行成功'}
                                 {run.status === 'failed' && '执行失败'}
                                 {run.status === 'running' && '执行中'}
                                 {run.status === 'skipped' && '已跳过'}
+                                {run.status === 'paused' && '等你确认'}
                               </span>
                               <span className="text-xs text-[var(--color-text-muted)]">
                                 {formatTime(run.run_at)}
@@ -757,6 +821,77 @@ export default function TrackingPage() {
                                   ))}
                                 </div>
                               </div>
+                            )}
+
+                            {/* 暂停待确认：显示卡在哪 + 纠偏输入 + 继续/终止 */}
+                            {run.status === 'paused' && !terminatedRunIds.has(run.id) && (
+                              <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                                <div className="flex items-start gap-2 mb-2">
+                                  <MessageSquare size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-xs font-medium text-amber-300 mb-0.5">
+                                      任务暂停了，需要你确认
+                                      {run.goal_state?.round !== undefined && (
+                                        <span className="ml-1.5 text-amber-400/70 font-normal">
+                                          （已推进 {run.goal_state.round} 轮）
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+                                      {run.confirm_prompt || '模型在关键阶段拿不准方向，想听听你的意见。'}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <textarea
+                                  value={guidanceDrafts[run.id] || ''}
+                                  onChange={(e) =>
+                                    setGuidanceDrafts((prev) => ({ ...prev, [run.id]: e.target.value }))
+                                  }
+                                  placeholder="可以补充方向或纠正偏差（比如：重点看最近的突破、别跑题了…），也可以不填直接继续"
+                                  rows={2}
+                                  className="w-full text-xs px-2.5 py-2 rounded-md bg-[var(--color-input-bg,#161b22)] border border-[var(--color-border)] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-amber-500/50 resize-none"
+                                />
+
+                                <div className="flex items-center gap-2 mt-2">
+                                  <button
+                                    onClick={() => handleResumeRun(selectedProject!, run)}
+                                    disabled={resumingRunId === run.id || runningIds.has(selectedProject?.id || '')}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                  >
+                                    {resumingRunId === run.id ? (
+                                      <>
+                                        <Loader2 size={12} className="animate-spin" />
+                                        继续执行中…
+                                      </>
+                                    ) : (
+                                      <>
+                                        <RefreshCw size={12} />
+                                        接着上次继续执行
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      setTerminatedRunIds((prev) => new Set(prev).add(run.id))
+                                    }
+                                    disabled={resumingRunId === run.id}
+                                    className="px-3 py-1.5 text-xs rounded-md bg-white/5 hover:bg-white/10 text-[var(--color-text-secondary)] hover:text-white disabled:opacity-50 transition-colors"
+                                  >
+                                    到此为止
+                                  </button>
+                                </div>
+                                <p className="text-[10px] text-[var(--color-text-muted)] mt-1.5">
+                                  接着上次继续 = 保留之前的进展往下走，不会从头再来
+                                </p>
+                              </div>
+                            )}
+
+                            {/* 已终止的暂停 */}
+                            {run.status === 'paused' && terminatedRunIds.has(run.id) && (
+                              <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                                已终止。需要时点上方「立即执行」重新发起。
+                              </p>
                             )}
                           </div>
 
@@ -910,6 +1045,28 @@ export default function TrackingPage() {
                       : '追踪任务会用这个大模型来整理简报；不选则使用设置里的默认模型'}
                 </p>
               </div>
+
+              {/* 执行轮数（仅目标执行/自主Agent 类型） */}
+              {formTaskType === 'goal' && (
+                <div>
+                  <label className="block text-sm font-medium mb-2 flex items-center gap-1.5">
+                    <RefreshCw size={14} className="text-blue-400" />
+                    单次执行轮数
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={formMaxRounds}
+                    onChange={(e) => setFormMaxRounds(e.target.value)}
+                    placeholder="默认 10 轮"
+                    className="w-full px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  />
+                  <p className="text-xs text-[var(--color-text-muted)] mt-1.5">
+                    大模型每次最多规划/调用工具多少轮；跑满仍未完成会「暂停」等你确认，可以接着续跑而不是从头再来。默认 10 轮。
+                  </p>
+                </div>
+              )}
 
               {/* 执行频率 */}
               <div>
