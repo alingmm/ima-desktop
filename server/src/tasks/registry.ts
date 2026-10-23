@@ -13,6 +13,7 @@ export interface TaskContext {
   project: TrackingProjectRecord;
   resumeState?: GoalStateSnapshot; // 断点续跑：上次暂停的快照
   userGuidance?: string; // 断点续跑：用户补充/纠偏的指令
+  runId?: string; // 本次执行记录 ID（工具审批关联用）
 }
 
 export interface TaskResult {

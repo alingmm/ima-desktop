@@ -669,3 +669,71 @@ export const captureApi = {
     organized?: boolean;
   }) => postJson<{ success: boolean; note: any; truncated?: boolean; char_count?: number }>('/api/capture/to-note', params),
 };
+
+// ========== 外部工具调用（权限分级） APIs ==========
+
+export type ToolActionType = 'open_app' | 'run_command';
+export type ToolPolicyLevel = 'auto' | 'confirm' | 'deny';
+
+export interface ToolPendingItem {
+  id: string;
+  action_type: ToolActionType;
+  action_detail: string;
+  risk_level: 'normal' | 'high';
+  risk_reason?: string;
+  source: 'manual' | 'agent';
+  run_id?: string;
+  project_id?: string;
+  created_at: string;
+}
+
+export interface ToolExecutionLogItem {
+  id: string;
+  action_type: ToolActionType;
+  action_detail: string;
+  level: ToolPolicyLevel;
+  risk_level: 'normal' | 'high';
+  ok: boolean;
+  result_summary: string;
+  source: 'manual' | 'agent';
+  duration_ms?: number;
+  created_at: string;
+}
+
+export const toolsApi = {
+  /** 获取权限分级 */
+  getPolicy: () => request<Record<ToolActionType, ToolPolicyLevel>>('/tools/policy'),
+
+  /** 保存权限分级 */
+  savePolicy: (policies: Partial<Record<ToolActionType, ToolPolicyLevel>>) =>
+    request<{ success: boolean; policies: Record<ToolActionType, ToolPolicyLevel> }>('/tools/policy', {
+      method: 'POST',
+      body: JSON.stringify({ policies }),
+    }),
+
+  /** 待确认列表 */
+  getPending: () => request<{ pending: ToolPendingItem[] }>('/tools/pending'),
+
+  /** 执行日志 */
+  getLogs: (limit = 50) => request<{ logs: ToolExecutionLogItem[] }>(`/tools/logs?limit=${limit}`),
+
+  /** 手动执行一次工具调用 */
+  run: (actionType: ToolActionType, target: string) =>
+    request<
+      | { status: 'executed'; ok: boolean; output: string; duration_ms: number }
+      | { status: 'pending'; pending: ToolPendingItem }
+    >('/tools/run', {
+      method: 'POST',
+      body: JSON.stringify({ action_type: actionType, target }),
+    }),
+
+  /** 批准/拒绝待确认项 */
+  confirm: (pendingId: string, approve: boolean, note?: string) =>
+    request<{ success: boolean; status: string; resumed: boolean; executed?: { ok: boolean; output: string } }>(
+      '/tools/confirm',
+      {
+        method: 'POST',
+        body: JSON.stringify({ pending_id: pendingId, approve, note }),
+      },
+    ),
+};

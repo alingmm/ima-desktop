@@ -194,6 +194,7 @@ export async function runProject(
       project,
       resumeState: options?.resumeState,
       userGuidance: options?.userGuidance,
+      runId: run.id,
     });
 
     const duration = Date.now() - startTime;

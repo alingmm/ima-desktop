@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Settings, User, Palette, Bell, Shield, HelpCircle, ChevronRight, Save, Cpu, RefreshCw, Download, CheckCircle, AlertCircle, Loader2, Key, Globe, Eye, EyeOff } from 'lucide-react';
-import { localModelApi, settingsApi } from '../api';
+import { Settings, User, Palette, Bell, Shield, HelpCircle, ChevronRight, Save, Cpu, RefreshCw, Download, CheckCircle, AlertCircle, Loader2, Key, Globe, Eye, EyeOff, Terminal, AppWindow, ScrollText, Play } from 'lucide-react';
+import { localModelApi, settingsApi, toolsApi } from '../api';
 import type { OllamaModel } from '../types';
+import type { ToolActionType, ToolPolicyLevel, ToolExecutionLogItem } from '../api';
 import { useLocalSettings } from '../hooks/useLocalSettings';
 import { useToast } from '../components/Toast';
 
-type SettingsSection = 'profile' | 'appearance' | 'models' | 'notifications' | 'security' | 'about';
+type SettingsSection = 'profile' | 'appearance' | 'models' | 'notifications' | 'tools' | 'security' | 'about';
 
 // OpenAI 兼容服务预设
 interface ServicePreset {
@@ -36,6 +37,7 @@ function SettingsPage() {
     { id: 'appearance' as SettingsSection, label: '外观设置', icon: Palette },
     { id: 'models' as SettingsSection, label: '模型偏好', icon: Settings },
     { id: 'notifications' as SettingsSection, label: '通知设置', icon: Bell },
+    { id: 'tools' as SettingsSection, label: '外部调用', icon: Terminal },
     { id: 'security' as SettingsSection, label: '账号安全', icon: Shield },
     { id: 'about' as SettingsSection, label: '关于', icon: HelpCircle },
   ];
@@ -212,6 +214,9 @@ function SettingsPage() {
             </div>
           </div>
         );
+
+      case 'tools':
+        return <ExternalToolsSettings />;
 
       case 'about':
         return (
@@ -816,3 +821,248 @@ function ModelSettings() {
 }
 
 export default SettingsPage;
+
+// ========== 外部调用设置（权限分级 + 手动测试 + 执行日志） ==========
+const POLICY_LEVEL_LABELS: Record<ToolPolicyLevel, string> = {
+  auto: '自动执行',
+  confirm: '每次确认',
+  deny: '禁用',
+};
+
+const ACTION_TYPE_META: { type: ToolActionType; label: string; desc: string; icon: typeof Terminal }[] = [
+  {
+    type: 'open_app',
+    label: '打开应用 / 链接',
+    desc: 'AI 执行任务时可以打开电脑上的应用、文件或网址',
+    icon: AppWindow,
+  },
+  {
+    type: 'run_command',
+    label: '执行系统命令',
+    desc: 'AI 执行任务时可以在电脑上运行命令（如查看目录、读取系统信息）',
+    icon: Terminal,
+  },
+];
+
+function ExternalToolsSettings() {
+  const { success: toastSuccess, error: toastError } = useToast();
+  const [policies, setPolicies] = useState<Record<ToolActionType, ToolPolicyLevel>>({
+    open_app: 'auto',
+    run_command: 'confirm',
+  });
+  const [loading, setLoading] = useState(true);
+  const [logs, setLogs] = useState<ToolExecutionLogItem[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [testType, setTestType] = useState<ToolActionType>('run_command');
+  const [testTarget, setTestTarget] = useState('');
+  const [testRunning, setTestRunning] = useState(false);
+  const [testOutput, setTestOutput] = useState('');
+
+  const loadLogs = async () => {
+    setLogsLoading(true);
+    try {
+      const res = await toolsApi.getLogs(50);
+      setLogs(res.logs || []);
+    } catch {
+      // 静默
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await toolsApi.getPolicy();
+        setPolicies(res);
+      } catch (e: any) {
+        toastError(e?.message || '加载权限设置失败');
+      } finally {
+        setLoading(false);
+      }
+      loadLogs();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleChangeLevel = async (type: ToolActionType, level: ToolPolicyLevel) => {
+    const prev = policies[type];
+    setPolicies((p) => ({ ...p, [type]: level }));
+    try {
+      await toolsApi.savePolicy({ [type]: level });
+      toastSuccess('权限设置已保存');
+    } catch (e: any) {
+      setPolicies((p) => ({ ...p, [type]: prev }));
+      toastError(e?.message || '保存失败，请重试');
+    }
+  };
+
+  const handleTest = async () => {
+    const target = testTarget.trim();
+    if (!target || testRunning) return;
+    setTestRunning(true);
+    setTestOutput('');
+    try {
+      const res = await toolsApi.run(testType, target);
+      if (res.status === 'pending') {
+        toastSuccess('该操作需要确认，请在弹出的确认窗口中处理');
+        setTestOutput('（已提交，等待你在确认弹窗中批准/拒绝）');
+      } else {
+        setTestOutput(res.output || (res.ok ? '（执行完成，无输出）' : '（执行失败）'));
+      }
+      loadLogs();
+    } catch (e: any) {
+      toastError(e?.message || '执行失败');
+      setTestOutput(`执行失败：${e?.message || '未知错误'}`);
+    } finally {
+      setTestRunning(false);
+    }
+  };
+
+  const formatTime = (iso?: string) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold text-white">外部调用</h2>
+        <p className="text-[var(--color-text-secondary)] text-sm mt-1">
+          管理 AI 在自主执行任务时调用电脑能力的权限。高风险操作（删除、改系统设置等）无论如何设置都会先经你确认。
+        </p>
+      </div>
+
+      {/* 权限分级 */}
+      <div className="space-y-3">
+        {ACTION_TYPE_META.map(({ type, label, desc, icon: Icon }) => (
+          <div
+            key={type}
+            className="flex items-center gap-4 p-4 bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-xl"
+          >
+            <div className="w-10 h-10 rounded-lg bg-[var(--color-hover-bg)] flex items-center justify-center flex-shrink-0">
+              <Icon size={18} className="text-[var(--color-text-secondary)]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white">{label}</p>
+              <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">{desc}</p>
+            </div>
+            <select
+              value={policies[type]}
+              disabled={loading}
+              onChange={(e) => handleChangeLevel(type, e.target.value as ToolPolicyLevel)}
+              className="px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] disabled:opacity-50"
+            >
+              {(Object.keys(POLICY_LEVEL_LABELS) as ToolPolicyLevel[]).map((lv) => (
+                <option key={lv} value={lv}>
+                  {POLICY_LEVEL_LABELS[lv]}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+        <div className="flex items-start gap-2 px-1">
+          <Shield size={14} className="text-[var(--color-text-secondary)] flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+            说明：打开网址链接默认安全；涉及删除文件、修改系统、结束进程等高风险命令，系统会强制弹出确认窗口并给出红色风险提示，无法被设置为自动执行。
+          </p>
+        </div>
+      </div>
+
+      {/* 手动测试 */}
+      <div className="p-4 bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-xl space-y-3">
+        <h3 className="text-sm font-medium text-white flex items-center gap-2">
+          <Play size={15} className="text-[var(--color-text-secondary)]" />
+          试一下
+        </h3>
+        <div className="flex gap-2">
+          <select
+            value={testType}
+            onChange={(e) => setTestType(e.target.value as ToolActionType)}
+            className="px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)]"
+          >
+            <option value="run_command">执行命令</option>
+            <option value="open_app">打开应用/链接</option>
+          </select>
+          <input
+            type="text"
+            value={testTarget}
+            onChange={(e) => setTestTarget(e.target.value)}
+            placeholder={testType === 'run_command' ? '例如：echo hello 或 ls' : '例如：https://www.example.com 或文件路径'}
+            className="flex-1 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] placeholder:text-[var(--color-text-tertiary)]"
+            onKeyDown={(e) => e.key === 'Enter' && handleTest()}
+          />
+          <button
+            onClick={handleTest}
+            disabled={testRunning || !testTarget.trim()}
+            className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white text-sm rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {testRunning && <Loader2 size={14} className="animate-spin" />}
+            执行
+          </button>
+        </div>
+        {testOutput && (
+          <pre className="text-xs text-[var(--color-text-secondary)] bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg p-3 max-h-40 overflow-y-auto whitespace-pre-wrap break-all font-mono">
+            {testOutput}
+          </pre>
+        )}
+      </div>
+
+      {/* 执行日志 */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium text-white flex items-center gap-2">
+            <ScrollText size={15} className="text-[var(--color-text-secondary)]" />
+            最近调用记录
+          </h3>
+          <button
+            onClick={loadLogs}
+            disabled={logsLoading}
+            className="text-xs text-[var(--color-text-secondary)] hover:text-white flex items-center gap-1 transition-colors"
+          >
+            <RefreshCw size={12} className={logsLoading ? 'animate-spin' : ''} />
+            刷新
+          </button>
+        </div>
+        {logs.length === 0 ? (
+          <p className="text-xs text-[var(--color-text-tertiary)] px-1">暂无调用记录</p>
+        ) : (
+          <div className="border border-[var(--color-border)] rounded-xl overflow-hidden divide-y divide-[var(--color-border)]">
+            {logs.map((log) => (
+              <div key={log.id} className="px-4 py-3 bg-[var(--color-card-bg)] flex items-start gap-3">
+                <span
+                  className={`mt-0.5 w-2 h-2 rounded-full flex-shrink-0 ${log.ok ? 'bg-[var(--color-success,#3fb950)]' : 'bg-[var(--color-danger,#f85149)]'}`}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-medium text-white">
+                      {log.action_type === 'run_command' ? '执行命令' : '打开应用/链接'}
+                    </span>
+                    {log.risk_level === 'high' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30">
+                        高风险
+                      </span>
+                    )}
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-hover-bg)] text-[var(--color-text-secondary)]">
+                      {log.source === 'agent' ? '自主任务' : '手动'}
+                    </span>
+                    <span className="text-[10px] text-[var(--color-text-tertiary)] ml-auto">
+                      {formatTime(log.created_at)}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[var(--color-text-secondary)] mt-1 break-all font-mono">
+                    {log.action_detail}
+                  </p>
+                  <p className="text-xs text-[var(--color-text-tertiary)] mt-0.5 line-clamp-2">
+                    {log.result_summary}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

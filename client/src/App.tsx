@@ -9,6 +9,7 @@ import SettingsPage from './pages/SettingsPage';
 import TrackingPage from './pages/TrackingPage';
 import MemoryPage from './pages/MemoryPage';
 import { ToastProvider } from './components/Toast';
+import PendingApprovalWatcher from './components/PendingApprovalWatcher';
 
 export type PageType = 'chat' | 'knowledge' | 'notes' | 'tracking' | 'video' | 'search' | 'memory' | 'settings';
 
@@ -53,6 +54,7 @@ function App() {
         <Sidebar currentPage={currentPage} onNavigate={setCurrentPage} />
         <main className="flex-1 overflow-hidden">{renderPage()}</main>
       </div>
+      <PendingApprovalWatcher />
     </ToastProvider>
   );
 }

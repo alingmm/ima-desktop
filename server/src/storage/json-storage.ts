@@ -19,6 +19,9 @@ export interface TableSchemas {
   memories: MemoryRecord;
   tracking_projects: TrackingProjectRecord;
   tracking_runs: TrackingRunRecord;
+  tool_policies: ToolPolicyRecord;
+  tool_pending_approvals: ToolPendingApprovalRecord;
+  tool_execution_logs: ToolExecutionLogRecord;
 }
 
 export interface UserRecord {
@@ -182,6 +185,7 @@ export interface GoalStateSnapshot {
   run_log: string[];       // 过程日志
   final_answer: string;    // 当前已得结论
   model_used?: string;     // 使用的模型
+  approved_actions?: string[]; // 本次执行中用户已批准的工具调用签名（批准后同签名放行）
 }
 
 export interface TrackingProjectRecord {
@@ -219,6 +223,56 @@ export interface TrackingRunRecord {
   goal_state?: GoalStateSnapshot; // goal 任务断点快照（供断点续跑）
   awaiting_confirm?: boolean; // 是否暂停等待人工确认/纠偏
   confirm_prompt?: string; // 暂停时给用户看的说明/模型想问的问题
+}
+
+// ========== 外部工具执行（需求9）==========
+export type ToolActionType = 'open_app' | 'run_command';
+export type ToolPolicyLevel = 'auto' | 'confirm' | 'deny';
+
+// 工具权限策略：每种动作类型一个总闸（用户可在设置页调整）
+export interface ToolPolicyRecord {
+  id: string;
+  user_id: string;
+  action_type: ToolActionType;
+  level: ToolPolicyLevel;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ToolApprovalStatus = 'pending' | 'approved' | 'rejected';
+
+// 待确认审批记录：需要用户确认的工具调用
+export interface ToolPendingApprovalRecord {
+  id: string;
+  user_id: string;
+  action_type: ToolActionType;
+  action_detail: string; // 脱敏后的目标/命令展示文本
+  raw_target?: string; // 原始目标（仅服务端内部使用，接口返回时必须剥离，不下发前端）
+  risk_level: 'normal' | 'high';
+  risk_reason?: string; // 高风险原因说明
+  signature: string; // 审批指纹：批准后同签名调用可放行
+  source: 'manual' | 'agent'; // 手动触发 or 自主任务发起
+  run_id?: string; // agent 来源时关联的执行记录
+  project_id?: string;
+  status: ToolApprovalStatus;
+  user_note?: string; // 用户批准/拒绝时的附言
+  created_at: string;
+  resolved_at?: string;
+}
+
+// 工具执行日志（只读审计，敏感值已脱敏）
+export interface ToolExecutionLogRecord {
+  id: string;
+  user_id: string;
+  action_type: ToolActionType;
+  action_detail: string; // 脱敏
+  level: ToolPolicyLevel; // 本次执行时的分级结果
+  risk_level: 'normal' | 'high';
+  ok: boolean;
+  result_summary: string; // 脱敏 + 截断的结果概要
+  source: 'manual' | 'agent';
+  duration_ms?: number;
+  created_at: string;
 }
 
 // ========== JSON File Storage ==========

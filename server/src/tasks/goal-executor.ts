@@ -5,6 +5,7 @@ import {
   selectAll,
   MemoryCategory,
 } from '../storage/json-storage';
+import { requestToolExecution } from '../services/tools';
 import { TaskExecutor, TaskContext, TaskResult } from './registry';
 
 // 自主执行（目标 Agent）执行器 —— 实现 ReAct 循环
@@ -13,6 +14,15 @@ import { TaskExecutor, TaskContext, TaskResult } from './registry';
 interface ToolResult {
   ok: boolean;
   output: string;
+  // 需要用户确认（权限分级为 confirm）：执行器应暂停并把提示展示给用户
+  needConfirm?: boolean;
+  confirmPrompt?: string;
+}
+
+interface ToolRunOptions {
+  runId?: string;
+  projectId?: string;
+  approvedSignatures?: string[];
 }
 
 // 可用工具实现
@@ -20,6 +30,7 @@ async function runTool(
   userId: string,
   action: string,
   args: any,
+  opts: ToolRunOptions = {},
 ): Promise<ToolResult> {
   switch (action) {
     case 'search': {
@@ -76,6 +87,39 @@ async function runTool(
       return { ok: true, output: `已记住：「${content}」` };
     }
 
+    case 'open_app':
+    case 'run_command': {
+      const isOpen = action === 'open_app';
+      const target = String(args?.target || args?.command || args?.path || '').trim();
+      if (!target) {
+        return { ok: false, output: isOpen ? '缺少 target 参数（要打开的应用/文件/链接）' : '缺少 command 参数（要执行的命令）' };
+      }
+      const outcome = await requestToolExecution(userId, action, target, {
+        source: 'agent',
+        runId: opts.runId,
+        projectId: opts.projectId,
+        approvedSignatures: opts.approvedSignatures,
+      });
+      if (outcome.outcome === 'executed') {
+        return { ok: outcome.ok, output: outcome.output };
+      }
+      if (outcome.outcome === 'pending') {
+        const a = outcome.approval;
+        const actionLabel = isOpen ? `打开「${a.action_detail}」` : `执行命令「${a.action_detail}」`;
+        const riskText =
+          a.risk_level === 'high'
+            ? `⚠️ 高风险操作（${a.risk_reason || '可能修改/删除系统内容'}），`
+            : '';
+        return {
+          ok: false,
+          output: '',
+          needConfirm: true,
+          confirmPrompt: `模型想要${actionLabel}。${riskText}该操作需要你确认后才能继续：屏幕上会弹出确认窗口，点「允许」后任务将自动接着执行；点「拒绝」则任务保持暂停。`,
+        };
+      }
+      return { ok: false, output: `该操作已被你的权限设置禁用（${outcome.message}）。如需使用，请到「设置-外部调用」调整权限。` };
+    }
+
     default:
       return { ok: false, output: `未知工具: ${action}` };
   }
@@ -97,6 +141,8 @@ export function createGoalExecutor(): TaskExecutor {
       let stepSummary = resume?.step_summary || '';
       let finalAnswer = resume?.final_answer || '';
       const startRound = resume?.round || 0;
+      // 本次执行中用户已批准的工具调用签名（续跑时放行同签名调用）
+      const approvedSignatures = [...(resume?.approved_actions || [])];
 
       // 用户补充/纠偏指令注入，作为后续轮次的新约束
       if (ctx.userGuidance && ctx.userGuidance.trim()) {
@@ -124,12 +170,17 @@ ${goal}
 
 ${stepSummary ? `已执行过的动作与结果（供你参考，避免重复）：\n${stepSummary}` : '你还没有执行任何动作。'}
 
-可用工具：search（联网搜索，参数 query）、write_note（保存笔记，参数 title/content）、remember（记住一条记忆，参数 content/category）
+可用工具：
+- search（联网搜索，参数 query）
+- write_note（保存笔记，参数 title/content）
+- remember（记住一条记忆，参数 content/category）
+- open_app（打开本机应用/文件/网址链接，参数 target。例如打开浏览器访问某网址）
+- run_command（在用户电脑上执行一条系统命令获取本机信息，参数 command。仅在确实需要本机信息时使用，优先用只读命令，如列目录、查进程）
 
 请严格按以下 JSON 格式输出（不要输出 JSON 以外的任何内容）：
 {
   "thought": "你对当前情况的简要思考",
-  "action": "search | write_note | remember | 以上都不是则为空字符串",
+  "action": "search | write_note | remember | open_app | run_command | 以上都不是则为空字符串",
   "args": { "相应参数": "..." },
   "done": false,
   "final_answer": "完成时填写最终答案，未完成则留空",
@@ -142,6 +193,7 @@ ${stepSummary ? `已执行过的动作与结果（供你参考，避免重复）
 - 如果已经获得足够信息并完成任务，设置 done=true 并用 final_answer 给出完整、用户可读的最终结果。
 - 若不需要搜索即可直接回答，直接 done=true。
 - 如果你在关键阶段拿不准方向、或需要用户补充信息/确认方向再继续，设置 need_user_input=true，并在 user_question 里用中文大白话写清楚你想问用户什么（此时 done=false、action 留空）。
+- 使用 open_app / run_command 前先想清楚必要性；可能需要用户确认，若工具返回"需要确认"，任务会暂停等待用户批准，你无需重复请求同一操作。
 - final_answer 使用中文，结构清晰。`;
 
           const llmResult = await chatCompletion(
@@ -192,9 +244,23 @@ ${stepSummary ? `已执行过的动作与结果（供你参考，避免重复）
           const args = decision.args || {};
           let madeProgress = false;
 
-          if (action && ['search', 'write_note', 'remember'].includes(action)) {
+          if (
+            action &&
+            ['search', 'write_note', 'remember', 'open_app', 'run_command'].includes(action)
+          ) {
             log(`执行工具：${action}`);
-            const toolResult = await runTool(ctx.userId, action, args);
+            const toolResult = await runTool(ctx.userId, action, args, {
+              runId: ctx.runId,
+              projectId: project.id,
+              approvedSignatures,
+            });
+            // 需要用户确认的工具调用：暂停任务，等待用户在确认弹窗中批准/拒绝
+            if (toolResult.needConfirm) {
+              confirmPrompt = toolResult.confirmPrompt || '该操作需要你确认后才能继续';
+              paused = true;
+              log(`工具 ${action} 需要你确认，任务已暂停等待审批`);
+              break;
+            }
             log(
               toolResult.ok
                 ? `工具 ${action} 成功：${toolResult.output.slice(0, 200)}`
@@ -276,6 +342,7 @@ ${stepSummary ? `已执行过的动作与结果（供你参考，避免重复）
             run_log: runLog,
             final_answer: finalAnswer,
             model_used: modelUsed,
+            approved_actions: approvedSignatures,
           },
         };
       } catch (err: any) {
