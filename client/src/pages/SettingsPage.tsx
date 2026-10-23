@@ -234,7 +234,7 @@ function SettingsPage() {
                   </svg>
                 </div>
                 <h3 className="text-lg font-semibold text-white mb-1">AI 工作台</h3>
-                <p className="text-sm text-[var(--color-text-muted)]">版本 1.0.0</p>
+                <p className="text-sm text-[var(--color-text-muted)]">版本 1.4.0</p>
               </div>
               <div className="space-y-3">
                 <button className="w-full flex items-center justify-between p-4 bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-xl hover:border-[var(--color-primary)] transition-colors">
