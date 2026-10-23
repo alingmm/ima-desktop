@@ -82,15 +82,48 @@ export async function fetchWithTimeout(
 }
 
 // ========== Chat Completion ==========
+/** 多模态消息内容分片（OpenAI 兼容 vision 格式） */
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } };
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  content: string | ChatContentPart[];
 }
 
 export interface ChatOptions {
   model?: string;
   temperature?: number;
   max_tokens?: number;
+}
+
+/** 判断消息列表中是否含图片（用于识别模型不支持视觉的场景） */
+export function messagesContainImage(messages: ChatMessage[]): boolean {
+  return messages.some(
+    (m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url')
+  );
+}
+
+/** 模型返回视觉不支持错误时，转换为用户可理解的错误码 */
+function asVisionErrorIfNeeded(
+  messages: ChatMessage[],
+  status: number,
+  errText: string
+): (Error & { code: string; status: number }) | null {
+  if (!messagesContainImage(messages)) return null;
+  const lower = errText.toLowerCase();
+  const hit =
+    /image|vision|visual|multimodal|multi-modal|unsupported type|does not support|不支持|图片|图像|多模态/.test(
+      lower
+    );
+  if (!hit) return null;
+  const err = new Error(
+    '当前选择的模型不支持图片识别，请在「设置」中切换到支持视觉的多模态模型后重试'
+  ) as Error & { code: string; status: number };
+  err.code = 'MODEL_NOT_VISION';
+  err.status = status;
+  return err;
 }
 
 export async function chatCompletion(
@@ -118,6 +151,8 @@ export async function chatCompletion(
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
+    const visionErr = asVisionErrorIfNeeded(messages, response.status, errText);
+    if (visionErr) throw visionErr;
     const err = new Error(`请求失败 (${response.status}): ${errText || response.statusText}`) as Error & { code: string; status: number };
     err.code = API_ERRORS.REQUEST_FAILED;
     err.status = response.status;
@@ -165,6 +200,8 @@ export async function streamChatCompletion(
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
+      const visionErr = asVisionErrorIfNeeded(messages, response.status, errText);
+      if (visionErr) throw visionErr;
       const err = new Error(`请求失败 (${response.status}): ${errText || response.statusText}`) as Error & { code: string; status: number };
       err.code = API_ERRORS.REQUEST_FAILED;
       err.status = response.status;

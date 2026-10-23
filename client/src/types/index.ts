@@ -13,11 +13,30 @@ export interface Conversation {
   updated_at: string;
 }
 
+/** 多模态消息内容分片（图片识别，OpenAI vision 格式） */
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } };
+
 export interface Message {
   id?: string;
   role: 'user' | 'assistant' | 'system';
-  content: string;
+  content: string | ChatContentPart[];
+  /** 仅前端展示用：本条用户消息携带的图片（不落库） */
+  images?: string[];
   created_at?: string;
+}
+
+/** 对话输入区待发送的附件 */
+export interface PendingAttachment {
+  id: string;
+  kind: 'image' | 'document';
+  name: string;
+  /** 图片的 data URL */
+  dataUrl?: string;
+  /** 文档抽取后的文本 */
+  text?: string;
+  status: 'loading' | 'ready';
 }
 
 export interface Model {

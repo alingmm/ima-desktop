@@ -548,3 +548,39 @@ export const memoryApi = {
       method: 'DELETE',
     }),
 };
+
+export interface ExtractedFile {
+  filename: string;
+  ext: string;
+  size: number;
+  chars: number;
+  content: string;
+}
+
+// 外部文件上传/解析 APIs
+export const filesApi = {
+  /** 上传文件并在后端抽取文本（不保存，仅预览） */
+  extract: async (file: File): Promise<ExtractedFile> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/files/extract', { method: 'POST', body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.message || data.error || '文件解析失败');
+    }
+    return data as ExtractedFile;
+  },
+
+  /** 上传文件直接存为一条笔记 */
+  toNote: async (file: File, tags?: string): Promise<{ note: any }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (tags) formData.append('tags', tags);
+    const res = await fetch('/api/files/to-note', { method: 'POST', body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.message || data.error || '保存到笔记失败');
+    }
+    return data as { note: any };
+  },
+};

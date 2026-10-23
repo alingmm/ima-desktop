@@ -15,8 +15,9 @@ import {
   BookmarkPlus,
   BookOpen,
   Loader,
+  FileUp,
 } from 'lucide-react';
-import { notesApi, knowledgeApi } from '../api';
+import { notesApi, knowledgeApi, filesApi } from '../api';
 import { useToast, showApiError } from '../components/Toast';
 import type { Note } from '../types';
 
@@ -40,6 +41,36 @@ export default function NotesPage() {
   const [selectedKbImport, setSelectedKbImport] = useState<string | null>(null);
   const [isImportingKb, setIsImportingKb] = useState(false);
   const [loadingKbList, setLoadingKbList] = useState(false);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
+  const uploadDocInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handlePickUploadDoc = () => uploadDocInputRef.current?.click();
+
+  const handleUploadDoc = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    setUploadingDoc(true);
+    let successCount = 0;
+    try {
+      for (const file of Array.from(fileList)) {
+        try {
+          const { note } = await filesApi.toNote(file);
+          setNotes((prev) => [note, ...prev]);
+          successCount += 1;
+        } catch (err: any) {
+          toast.error(`「${file.name}」导入失败：${err?.message || '请稍后重试'}`);
+        }
+      }
+      if (successCount > 0) {
+        toast.success(`成功导入 ${successCount} 个文档为笔记`);
+        loadNotes();
+        loadTags();
+      }
+    } finally {
+      setUploadingDoc(false);
+      if (uploadDocInputRef.current) uploadDocInputRef.current.value = '';
+    }
+  };
 
   const loadNotes = useCallback(async () => {
     try {
@@ -496,14 +527,33 @@ export default function NotesPage() {
               <List size={18} />
             </button>
           </div>
-          {/* 新建按钮 */}
-          <button
-            onClick={createNote}
-            className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-opacity flex items-center gap-2"
-          >
-            <Plus size={18} />
-            新建笔记
-          </button>
+          {/* 操作按钮 */}
+          <div className="flex items-center gap-2">
+            <input
+              ref={uploadDocInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.doc,.docx,.txt,.md,.markdown"
+              onChange={handleUploadDoc}
+              className="hidden"
+            />
+            <button
+              onClick={handlePickUploadDoc}
+              disabled={uploadingDoc}
+              title="上传 Word / PDF / TXT / Markdown 文档，自动识别文字并保存为笔记"
+              className="px-3 py-2 border border-[#30363d] text-[#c9d1d9] rounded-lg text-sm font-medium hover:bg-[#21262d] disabled:opacity-50 transition-colors flex items-center gap-2"
+            >
+              {uploadingDoc ? <Loader size={18} className="animate-spin" /> : <FileUp size={18} />}
+              <span className="hidden sm:inline">{uploadingDoc ? '导入中…' : '上传文档'}</span>
+            </button>
+            <button
+              onClick={createNote}
+              className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-opacity flex items-center gap-2"
+            >
+              <Plus size={18} />
+              新建笔记
+            </button>
+          </div>
         </div>
       </div>
 

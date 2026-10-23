@@ -24,6 +24,7 @@ import localModelRoutes from './routes/local-model';
 import settingsRoutes from './routes/settings';
 import trackingRoutes from './routes/tracking';
 import memoryRoutes from './routes/memories';
+import filesRoutes from './routes/files';
 import { startTaskScheduler } from './tasks/scheduler';
 
 export function createApp(clientDistDir?: string): express.Express {
@@ -52,6 +53,7 @@ export function createApp(clientDistDir?: string): express.Express {
   app.use('/api/settings', settingsRoutes);
   app.use('/api/tracking', trackingRoutes);
   app.use('/api/memories', memoryRoutes);
+  app.use('/api/files', filesRoutes);
 
   // 启动定时任务调度器
   startTaskScheduler();

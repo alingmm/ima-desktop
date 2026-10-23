@@ -12,6 +12,7 @@ import {
 } from '../storage/json-storage';
 import { createEmbedding, createEmbeddingsBatch, chatCompletion, cosineSimilarity, API_ERRORS } from '../services/ai';
 import { splitTextIntoChunks } from '../utils/text';
+import { extractTextFromFile } from '../utils/document';
 import { getUploadsDir, ensureDir } from '../config';
 
 const router: import('express').Router = Router();
@@ -147,26 +148,32 @@ router.post('/bases/:id/upload', authMiddleware, upload.single('file'), async (r
 
     const filePath = file.path;
     const fileName = file.originalname;
-    const fileExt = path.extname(fileName).toLowerCase();
 
-    // Extract text content
-    let content = '';
+    // Extract text content（统一走抽取工具：txt/md/csv/docx/pdf）
+    const extracted = await extractTextFromFile(filePath, fileName);
+
+    // 清理上传的临时文件
     try {
-      if (fileExt === '.txt' || fileExt === '.md') {
-        content = fs.readFileSync(filePath, 'utf-8');
-      } else if (fileExt === '.pdf') {
-        const { default: pdfParse } = await import('pdf-parse');
-        const dataBuffer = fs.readFileSync(filePath);
-        const pdfData = await pdfParse(dataBuffer);
-        content = pdfData.text;
-      } else if (fileExt === '.docx' || fileExt === '.doc') {
-        content = `[${fileName}] - Word document uploaded. Text extraction for .docx requires additional processing.`;
-      } else {
-        content = `[${fileName}] - File uploaded.`;
-      }
-    } catch (extractError) {
-      console.error('Text extraction error:', extractError);
-      content = `[${fileName}] - Content extraction failed.`;
+      fs.unlinkSync(filePath);
+    } catch {
+      // ignore
+    }
+
+    if (!extracted.supported) {
+      res.status(400).json({
+        error: 'UNSUPPORTED_FILE_TYPE',
+        message: extracted.unsupportedReason || '暂不支持这种文件格式',
+      });
+      return;
+    }
+
+    let content = extracted.content;
+    if (!content) {
+      res.status(400).json({
+        error: 'EMPTY_TEXT_CONTENT',
+        message: extracted.unsupportedReason || '未能从文件中读取到文字内容',
+      });
+      return;
     }
 
     // Chunk the content
@@ -226,13 +233,6 @@ router.post('/bases/:id/upload', authMiddleware, upload.single('file'), async (r
 
     if (chunkRecords.length > 0) {
       insertMany('document_chunks', chunkRecords);
-    }
-
-    // Clean up uploaded file
-    try {
-      fs.unlinkSync(filePath);
-    } catch {
-      // ignore
     }
 
     if (embeddingFailed) {
