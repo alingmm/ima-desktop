@@ -597,3 +597,75 @@ export const filesApi = {
     return data as { note: any };
   },
 };
+
+// ========== 网页 / 视频链接抓取 APIs ==========
+
+export interface WebCaptureData {
+  kind?: 'web';
+  title: string;
+  content: string;
+  url: string;
+  final_url?: string;
+  description?: string;
+  site_name?: string;
+  char_count?: number;
+  truncated?: boolean;
+}
+
+export interface VideoCaptureData {
+  kind?: 'video';
+  platform: string;
+  title: string;
+  author?: string;
+  description?: string;
+  thumbnail?: string;
+  duration_seconds?: number;
+  url: string;
+  final_url?: string;
+  has_transcript: boolean;
+  note?: string;
+}
+
+export type CaptureData = WebCaptureData | VideoCaptureData;
+
+async function postJson<T>(path: string, body: any): Promise<T> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.message || data.error || '请求失败');
+  }
+  return data as T;
+}
+
+export const captureApi = {
+  /** 抓取普通网页 */
+  captureWeb: (url: string) => postJson<WebCaptureData>('/api/capture/web', { url }),
+
+  /** 抓取视频元信息 */
+  captureVideo: (url: string) => postJson<VideoCaptureData>('/api/capture/video', { url }),
+
+  /** 自动识别网页/视频并抓取 */
+  fetch: (url: string) => postJson<CaptureData>('/api/capture/fetch', { url }),
+
+  /** 大模型一键整理为结构化文档 */
+  organize: (params: {
+    kind: 'web' | 'video';
+    title: string;
+    content: string;
+    url: string;
+  }) => postJson<{ title: string; content: string; kind: string }>('/api/capture/organize', params),
+
+  /** 保存为笔记 */
+  toNote: (params: {
+    kind: 'web' | 'video';
+    title: string;
+    content: string;
+    url: string;
+    author?: string;
+    organized?: boolean;
+  }) => postJson<{ success: boolean; note: any; truncated?: boolean; char_count?: number }>('/api/capture/to-note', params),
+};
