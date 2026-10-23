@@ -16,6 +16,7 @@ import {
   rescheduleProject,
   unscheduleProject,
 } from '../tasks/scheduler';
+import { isValidCron } from '../utils/cron';
 
 const router: Router = Router();
 
@@ -92,6 +93,19 @@ router.post('/projects', async (req: Request, res: Response) => {
         .status(400)
         .json({ error: 'Frequency is required', message: '请选择执行频率' });
     }
+    if (frequency === 'custom') {
+      if (!cron_expression || !cron_expression.trim()) {
+        return res
+          .status(400)
+          .json({ error: 'Cron is required', message: '请设置执行时间' });
+      }
+      if (!isValidCron(cron_expression.trim())) {
+        return res.status(400).json({
+          error: 'Invalid cron',
+          message: '时间表达式格式不对，请检查（应为：分钟 小时 日 月 周，共 5 段）',
+        });
+      }
+    }
 
     const validPermissions: TrackingPermission[] = ['SEARCH', 'LLM', 'WRITE', 'NOTIFY'];
     const perms = (permissions || []).filter((p: string) =>
@@ -148,6 +162,19 @@ router.patch('/projects/:id', async (req: Request, res: Response) => {
     // 模型为空字符串表示"跟随默认模型"，清除该字段
     if (update.model !== undefined && !(update.model as string).trim()) {
       delete update.model;
+    }
+
+    // 自定义频率校验 cron 表达式合法性（以更新后最终生效的值为准）
+    const finalFrequency = update.frequency ?? project.frequency;
+    const finalCron =
+      update.cron_expression !== undefined ? update.cron_expression : project.cron_expression;
+    if (finalFrequency === 'custom') {
+      if (!finalCron || !String(finalCron).trim() || !isValidCron(String(finalCron).trim())) {
+        return res.status(400).json({
+          error: 'Invalid cron',
+          message: '时间表达式格式不对，请检查（应为：分钟 小时 日 月 周，共 5 段）',
+        });
+      }
     }
 
     update.updated_at = new Date().toISOString();

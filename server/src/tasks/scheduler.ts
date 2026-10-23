@@ -24,6 +24,7 @@ import {
 } from './registry';
 import { createTrackingExecutor } from './tracking-executor';
 import { createGoalExecutor } from './goal-executor';
+import { getNextRunFromCron } from '../utils/cron';
 
 // 执行中的项目 id 集合（防止并发）
 const runningProjects = new Set<string>();
@@ -58,20 +59,10 @@ export function getNextRunTime(
       next.setHours(9, 0, 0, 0);
       break;
     case 'custom':
-      // 简单 cron 解析（仅支持 "分钟 小时 * * *" 形式）
+      // 标准 5 段 cron 解析（分 时 日 月 周）
       if (cronExpression) {
-        const parts = cronExpression.trim().split(/\s+/);
-        if (parts.length >= 2) {
-          const minute = parseInt(parts[0], 10);
-          const hour = parseInt(parts[1], 10);
-          if (!isNaN(minute) && !isNaN(hour)) {
-            next.setHours(hour, minute, 0, 0);
-            if (next <= from) {
-              next.setDate(next.getDate() + 1);
-            }
-            return next;
-          }
-        }
+        const cronNext = getNextRunFromCron(cronExpression, from);
+        if (cronNext) return cronNext;
       }
       // 无法解析的自定义 cron，fallback 到每小时
       next.setHours(next.getHours() + 1);

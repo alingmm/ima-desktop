@@ -28,6 +28,15 @@ import {
 } from 'lucide-react';
 import { trackingApi, notesApi, chatApi } from '../api';
 import { showApiError, useToast } from '../components/Toast';
+import type { ScheduleKind, ScheduleFormValue } from '../utils/cron';
+import {
+  DEFAULT_SCHEDULE_FORM,
+  formToSchedule,
+  scheduleToForm,
+  describeScheduleZh,
+  previewNextRun,
+  isValidCron,
+} from '../utils/cron';
 
 type TrackingPermission = 'SEARCH' | 'LLM' | 'WRITE' | 'NOTIFY';
 type TrackingFrequency = 'hourly' | 'daily' | 'weekly' | 'custom';
@@ -111,11 +120,25 @@ const PERMISSION_CONFIG: {
   },
 ];
 
-const FREQUENCY_OPTIONS: { value: TrackingFrequency; label: string; desc: string }[] = [
-  { value: 'hourly', label: '每小时', desc: '整点执行' },
-  { value: 'daily', label: '每天', desc: '上午 9:00 执行' },
-  { value: 'weekly', label: '每周', desc: '每周一 9:00 执行' },
-  { value: 'custom', label: '自定义（Cron）', desc: '使用 Cron 表达式' },
+// 频率大类选项（中文习惯，下拉选择）
+const SCHEDULE_KIND_OPTIONS: { value: ScheduleKind; label: string }[] = [
+  { value: 'hourly', label: '每小时（整点）' },
+  { value: 'daily', label: '每天' },
+  { value: 'weekly', label: '每周' },
+  { value: 'monthly', label: '每月' },
+  { value: 'interval_hours', label: '每隔几小时' },
+  { value: 'interval_days', label: '每隔几天' },
+  { value: 'custom', label: '高级：自定义表达式' },
+];
+
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: '周一' },
+  { value: 2, label: '周二' },
+  { value: 3, label: '周三' },
+  { value: 4, label: '周四' },
+  { value: 5, label: '周五' },
+  { value: 6, label: '周六' },
+  { value: 0, label: '周日' },
 ];
 
 function formatTime(iso?: string): string {
@@ -135,6 +158,18 @@ function formatDuration(ms?: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+// 预览用：带周几的时间格式
+function formatPreviewTime(d: Date): string {
+  const weekNames = ['日', '一', '二', '三', '四', '五', '六'];
+  const base = d.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return `${base} 周${weekNames[d.getDay()]}`;
+}
+
 export default function TrackingPage() {
   const toast = useToast();
   const [projects, setProjects] = useState<TrackingProject[]>([]);
@@ -152,8 +187,7 @@ export default function TrackingPage() {
   const [formTaskType, setFormTaskType] = useState<'tracking' | 'goal'>('tracking');
   const [formName, setFormName] = useState('');
   const [formTopic, setFormTopic] = useState('');
-  const [formFrequency, setFormFrequency] = useState<TrackingFrequency>('daily');
-  const [formCron, setFormCron] = useState('0 9 * * *');
+  const [scheduleForm, setScheduleForm] = useState<ScheduleFormValue>(DEFAULT_SCHEDULE_FORM);
   const [formPermissions, setFormPermissions] = useState<TrackingPermission[]>([
     'SEARCH',
     'LLM',
@@ -231,13 +265,18 @@ export default function TrackingPage() {
     }
   };
 
+  // 表单的中文时间选择 → 存储用的 { frequency, cron_expression }
+  const formToSchedulePayload = (): { frequency: TrackingFrequency; cron_expression?: string } => {
+    const { frequency, cronExpression } = formToSchedule(scheduleForm);
+    return { frequency, cron_expression: cronExpression };
+  };
+
   const handleCreateClick = () => {
     setEditingProject(null);
     setFormTaskType('tracking');
     setFormName('');
     setFormTopic('');
-    setFormFrequency('daily');
-    setFormCron('0 9 * * *');
+    setScheduleForm(DEFAULT_SCHEDULE_FORM);
     setFormPermissions(['SEARCH', 'LLM', 'WRITE']);
     setFormModel('');
     setShowCreateModal(true);
@@ -267,8 +306,7 @@ export default function TrackingPage() {
         task_type: formTaskType,
         name: formName,
         topic: formTopic,
-        frequency: formFrequency,
-        cron_expression: formFrequency === 'custom' ? formCron : undefined,
+        ...formToSchedulePayload(),
         permissions: formPermissions,
         model: formModel,
         max_rounds: formMaxRounds.trim() ? Number(formMaxRounds) : undefined,
@@ -288,8 +326,7 @@ export default function TrackingPage() {
         task_type: formTaskType,
         name: formName,
         topic: formTopic,
-        frequency: formFrequency,
-        cron_expression: formFrequency === 'custom' ? formCron : undefined,
+        ...formToSchedulePayload(),
         permissions: formPermissions,
         model: formModel,
         max_rounds: formMaxRounds.trim() ? Number(formMaxRounds) : undefined,
@@ -308,8 +345,7 @@ export default function TrackingPage() {
         setPendingProject({
           name: formName,
           topic: formTopic,
-          frequency: formFrequency,
-          cron_expression: formFrequency === 'custom' ? formCron : undefined,
+          ...formToSchedulePayload(),
         });
         setShowPermissionModal(true);
       } else {
@@ -413,8 +449,7 @@ export default function TrackingPage() {
     setFormTaskType(project.task_type === 'goal' ? 'goal' : 'tracking');
     setFormName(project.name);
     setFormTopic(project.topic);
-    setFormFrequency(project.frequency === 'hourly' || project.frequency === 'daily' || project.frequency === 'weekly' || project.frequency === 'custom' ? project.frequency : 'daily');
-    setFormCron(project.cron_expression || '0 9 * * *');
+    setScheduleForm(scheduleToForm(project.frequency, project.cron_expression));
     setFormModel(project.model || '');
     setFormMaxRounds(project.max_rounds ? String(project.max_rounds) : '');
     setShowCreateModal(true);
@@ -428,8 +463,7 @@ export default function TrackingPage() {
       const payload: Record<string, any> = {
         name: formName,
         topic: formTopic,
-        frequency: formFrequency,
-        cron_expression: formFrequency === 'custom' ? formCron : undefined,
+        ...formToSchedulePayload(),
         model: formModel, // 空字符串表示跟随默认模型
         max_rounds: formMaxRounds.trim() ? Number(formMaxRounds) : undefined,
       };
@@ -557,8 +591,7 @@ export default function TrackingPage() {
                       <div className="flex items-center gap-2 mt-2 text-xs text-[var(--color-text-muted)]">
                         <Clock size={12} />
                         <span>
-                          {FREQUENCY_OPTIONS.find((f) => f.value === project.frequency)?.label ||
-                            project.frequency}
+                          {describeScheduleZh(project.frequency, project.cron_expression)}
                         </span>
                       </div>
                     </div>
@@ -658,8 +691,7 @@ export default function TrackingPage() {
                   <div>
                     <div className="text-[var(--color-text-muted)] text-xs mb-1">执行频率</div>
                     <div className="text-white">
-                      {FREQUENCY_OPTIONS.find((f) => f.value === selectedProject.frequency)
-                        ?.label || selectedProject.frequency}
+                      {describeScheduleZh(selectedProject.frequency, selectedProject.cron_expression)}
                     </div>
                   </div>
                   <div>
@@ -1068,34 +1100,88 @@ export default function TrackingPage() {
                 </div>
               )}
 
-              {/* 执行频率 */}
+              {/* 执行频率（中文习惯选择，无需懂 cron） */}
               <div>
                 <label className="block text-sm font-medium mb-2">执行频率</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {FREQUENCY_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.value}
-                      onClick={() => setFormFrequency(opt.value)}
-                      className={`p-3 rounded-lg border text-left transition-colors ${
-                        formFrequency === opt.value
-                          ? 'border-blue-500 bg-blue-500/10'
-                          : 'border-[var(--color-border)] hover:border-[var(--color-text-muted)]'
-                      }`}
+                <div className="flex gap-2">
+                  <select
+                    value={scheduleForm.kind}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, kind: e.target.value as ScheduleKind })}
+                    className="flex-1 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 text-sm"
+                  >
+                    {SCHEDULE_KIND_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  {scheduleForm.kind === 'weekly' && (
+                    <select
+                      value={scheduleForm.weekday}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, weekday: Number(e.target.value) })}
+                      className="w-24 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 text-sm"
                     >
-                      <div className="text-sm font-medium">{opt.label}</div>
-                      <div className="text-xs text-[var(--color-text-muted)] mt-0.5">
-                        {opt.desc}
-                      </div>
-                    </button>
-                  ))}
+                      {WEEKDAY_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  {scheduleForm.kind === 'monthly' && (
+                    <select
+                      value={scheduleForm.monthday}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, monthday: Number(e.target.value) })}
+                      className="w-24 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 text-sm"
+                    >
+                      {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                        <option key={d} value={d}>
+                          {d} 号
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  {(scheduleForm.kind === 'daily' ||
+                    scheduleForm.kind === 'weekly' ||
+                    scheduleForm.kind === 'monthly' ||
+                    scheduleForm.kind === 'interval_days') && (
+                    <input
+                      type="time"
+                      value={scheduleForm.time}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, time: e.target.value })}
+                      className="w-32 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 text-sm"
+                    />
+                  )}
+
+                  {(scheduleForm.kind === 'interval_hours' || scheduleForm.kind === 'interval_days') && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm text-[var(--color-text-secondary)]">每隔</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={scheduleForm.kind === 'interval_hours' ? 23 : 30}
+                        value={scheduleForm.interval}
+                        onChange={(e) =>
+                          setScheduleForm({ ...scheduleForm, interval: Number(e.target.value) || 1 })
+                        }
+                        className="w-20 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 text-sm"
+                      />
+                      <span className="text-sm text-[var(--color-text-secondary)]">
+                        {scheduleForm.kind === 'interval_hours' ? '小时' : '天'}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
-                {formFrequency === 'custom' && (
+                {scheduleForm.kind === 'custom' && (
                   <div className="mt-3">
                     <input
                       type="text"
-                      value={formCron}
-                      onChange={(e) => setFormCron(e.target.value)}
+                      value={scheduleForm.customCron}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, customCron: e.target.value })}
                       placeholder="Cron 表达式，如：0 9 * * *"
                       className="w-full px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white placeholder-[var(--color-text-muted)] focus:outline-none focus:border-blue-500 font-mono text-sm"
                     />
@@ -1104,6 +1190,31 @@ export default function TrackingPage() {
                     </p>
                   </div>
                 )}
+
+                {/* 下次执行预览 + 中文说明 */}
+                {(() => {
+                  const sched = formToSchedule(scheduleForm);
+                  const desc = describeScheduleZh(sched.frequency, sched.cronExpression);
+                  const next = previewNextRun(scheduleForm);
+                  const invalid = scheduleForm.kind === 'custom' && !isValidCron(scheduleForm.customCron);
+                  return (
+                    <div className="mt-3 flex items-start gap-2 text-xs rounded-lg bg-blue-500/5 border border-blue-500/20 px-3 py-2.5">
+                      <Clock size={13} className="text-blue-400 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <span className="text-blue-300">{desc}</span>
+                        {next && !invalid ? (
+                          <div className="text-[var(--color-text-muted)] mt-0.5">
+                            下次执行：{formatPreviewTime(next)}
+                          </div>
+                        ) : (
+                          <div className="text-red-400 mt-0.5">
+                            表达式无法识别，请检查格式
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* 权限预览（编辑模式不改权限，隐藏） */}
