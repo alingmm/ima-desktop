@@ -42,6 +42,7 @@ router.get('/projects', async (req: Request, res: Response) => {
         task_type: p.task_type,
         enabled: p.enabled,
         permissions: p.permissions,
+        model: (p as any).model,
         last_run_at: p.last_run_at,
         next_run_at: p.next_run_at,
         created_at: p.created_at,
@@ -72,7 +73,7 @@ router.get('/projects/:id', async (req: Request, res: Response) => {
 router.post('/projects', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId;
-    const { name, topic, frequency, cron_expression, task_type, permissions } =
+    const { name, topic, frequency, cron_expression, task_type, permissions, model } =
       req.body;
 
     if (!name || !name.trim()) {
@@ -107,6 +108,7 @@ router.post('/projects', async (req: Request, res: Response) => {
       task_type: task_type || 'tracking',
       enabled: true,
       permissions: perms,
+      model: model && model.trim() ? model.trim() : undefined,
       created_at: now,
       updated_at: now,
     });
@@ -133,12 +135,17 @@ router.patch('/projects/:id', async (req: Request, res: Response) => {
     }
 
     const update: Partial<TrackingProjectRecord> = {};
-    const fields = ['name', 'topic', 'frequency', 'cron_expression', 'enabled', 'permissions'] as const;
+    const fields = ['name', 'topic', 'frequency', 'cron_expression', 'enabled', 'permissions', 'model'] as const;
 
     for (const field of fields) {
       if (req.body[field] !== undefined) {
         (update as any)[field] = req.body[field];
       }
+    }
+
+    // 模型为空字符串表示"跟随默认模型"，清除该字段
+    if (update.model !== undefined && !(update.model as string).trim()) {
+      delete update.model;
     }
 
     update.updated_at = new Date().toISOString();

@@ -210,6 +210,7 @@ export async function runProject(
         items_found: result.items_found,
         duration_ms: duration,
         process_log: result.process_log,
+        model_used: result.model_used,
       });
       updateById('tracking_projects', projectId, {
         last_run_at: new Date().toISOString(),
@@ -228,6 +229,8 @@ export async function runProject(
         error_message: result.error_message,
         error_code: result.error_code,
         duration_ms: duration,
+        process_log: result.process_log,
+        model_used: result.model_used,
       });
 
       return {

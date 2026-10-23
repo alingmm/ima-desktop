@@ -21,8 +21,9 @@ import {
   AlertCircle,
   Sparkles,
   Target,
+  Cpu,
 } from 'lucide-react';
-import { trackingApi, notesApi } from '../api';
+import { trackingApi, notesApi, chatApi } from '../api';
 import { showApiError, useToast } from '../components/Toast';
 
 type TrackingPermission = 'SEARCH' | 'LLM' | 'WRITE' | 'NOTIFY';
@@ -37,6 +38,7 @@ interface TrackingProject {
   task_type: string;
   enabled: boolean;
   permissions: TrackingPermission[];
+  model?: string;
   last_run_at?: string;
   next_run_at?: string;
   created_at: string;
@@ -54,6 +56,7 @@ interface TrackingRun {
   items_found?: number;
   duration_ms?: number;
   process_log?: string[];
+  model_used?: string;
 }
 
 const PERMISSION_CONFIG: {
@@ -141,10 +144,35 @@ export default function TrackingPage() {
     'LLM',
     'WRITE',
   ]);
+  const [formModel, setFormModel] = useState(''); // 空表示跟随默认模型
   const [submitting, setSubmitting] = useState(false);
+
+  // 可选大模型列表（云端 + Ollama 本地）
+  const [availableModels, setAvailableModels] = useState<{ id: string; label: string }[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
 
   useEffect(() => {
     loadProjects();
+  }, []);
+
+  // 加载可选大模型（追踪任务使用云端对话模型生成简报）
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        setModelsLoading(true);
+        const res = await chatApi.getModels();
+        const list = (res.models || []).map((m: any) => ({
+          id: m.name || m.id,
+          label: m.name || m.id,
+        }));
+        setAvailableModels(list);
+      } catch (e) {
+        console.error('加载模型列表失败:', e);
+      } finally {
+        setModelsLoading(false);
+      }
+    };
+    loadModels();
   }, []);
 
   useEffect(() => {
@@ -190,6 +218,7 @@ export default function TrackingPage() {
     setFormFrequency('daily');
     setFormCron('0 9 * * *');
     setFormPermissions(['SEARCH', 'LLM', 'WRITE']);
+    setFormModel('');
     setShowCreateModal(true);
   };
 
@@ -220,6 +249,7 @@ export default function TrackingPage() {
         frequency: formFrequency,
         cron_expression: formFrequency === 'custom' ? formCron : undefined,
         permissions: formPermissions,
+        model: formModel,
       });
       setShowPermissionModal(true);
       setShowCreateModal(false);
@@ -239,6 +269,7 @@ export default function TrackingPage() {
         frequency: formFrequency,
         cron_expression: formFrequency === 'custom' ? formCron : undefined,
         permissions: formPermissions,
+        model: formModel,
       };
 
       const res = await trackingApi.createProject(data);
@@ -326,6 +357,7 @@ export default function TrackingPage() {
     setFormTopic(project.topic);
     setFormFrequency(project.frequency === 'hourly' || project.frequency === 'daily' || project.frequency === 'weekly' || project.frequency === 'custom' ? project.frequency : 'daily');
     setFormCron(project.cron_expression || '0 9 * * *');
+    setFormModel(project.model || '');
     setShowCreateModal(true);
   };
 
@@ -339,6 +371,7 @@ export default function TrackingPage() {
         topic: formTopic,
         frequency: formFrequency,
         cron_expression: formFrequency === 'custom' ? formCron : undefined,
+        model: formModel, // 空字符串表示跟随默认模型
       };
       const res = await trackingApi.updateProject(editingProject.id, payload);
       setProjects(projects.map((p) => (p.id === editingProject.id ? res.project : p)));
@@ -545,6 +578,10 @@ export default function TrackingPage() {
                         ? `目标：${selectedProject.topic}`
                         : `追踪主题：${selectedProject.topic}`}
                     </p>
+                    <p className="text-xs text-[var(--color-text-muted)] mt-1.5 flex items-center gap-1.5">
+                      <Cpu size={12} className="text-blue-400" />
+                      使用模型：{selectedProject.model ? selectedProject.model : '默认模型'}
+                    </p>
                   </div>
                   <span
                     className={`px-2.5 py-1 rounded-full text-xs font-medium ${
@@ -611,6 +648,22 @@ export default function TrackingPage() {
                   执行历史
                 </h3>
 
+                {/* 正在执行横幅：显示当前使用的大模型 */}
+                {runningIds.has(selectedProject.id) && (
+                  <div className="mb-3 flex items-center gap-2.5 px-4 py-3 rounded-lg bg-blue-500/10 border border-blue-500/30 text-sm">
+                    <Loader2 size={16} className="animate-spin text-blue-400 flex-shrink-0" />
+                    <div>
+                      <span className="text-blue-300">正在执行追踪任务…</span>
+                      <span className="text-[var(--color-text-muted)] ml-2">
+                        使用模型：{selectedProject.model || '默认模型'}
+                      </span>
+                      <div className="text-xs text-[var(--color-text-muted)] mt-0.5">
+                        联网搜索 → 调用大模型整理简报 → 保存到笔记，请稍候
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {runsLoading ? (
                   <div className="flex items-center justify-center h-32 text-[var(--color-text-muted)]">
                     <Loader2 size={18} className="animate-spin mr-2" />
@@ -662,6 +715,12 @@ export default function TrackingPage() {
                                   · {formatDuration(run.duration_ms)}
                                 </span>
                               )}
+                              {run.model_used && (
+                                <span className="text-xs text-blue-400 flex items-center gap-1" title="本次执行使用的大模型">
+                                  <Cpu size={11} />
+                                  {run.model_used}
+                                </span>
+                              )}
                             </div>
 
                             {run.summary && (
@@ -683,7 +742,7 @@ export default function TrackingPage() {
                               </p>
                             )}
 
-                            {run.process_log && run.process_log.length > 0 && selectedProject.task_type === 'goal' && (
+                            {run.process_log && run.process_log.length > 0 && (
                               <div className="mt-2 pt-2 border-t border-[var(--color-border)]">
                                 <div className="text-xs text-[var(--color-text-muted)] mb-1.5 flex items-center gap-1.5">
                                   <Sparkles size={12} className="text-purple-400" />
@@ -822,6 +881,34 @@ export default function TrackingPage() {
                   rows={3}
                   className="w-full px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white placeholder-[var(--color-text-muted)] focus:outline-none focus:border-blue-500 resize-none"
                 />
+              </div>
+
+              {/* 使用的大模型 */}
+              <div>
+                <label className="block text-sm font-medium mb-2 flex items-center gap-1.5">
+                  <Cpu size={14} className="text-blue-400" />
+                  使用的大模型
+                </label>
+                <select
+                  value={formModel}
+                  onChange={(e) => setFormModel(e.target.value)}
+                  disabled={modelsLoading}
+                  className="w-full px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                >
+                  <option value="">跟随默认模型（推荐）</option>
+                  {availableModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-[var(--color-text-muted)] mt-1.5">
+                  {modelsLoading
+                    ? '正在读取可用模型…'
+                    : availableModels.length === 0
+                      ? '未读取到可用模型，请先在「设置」中配置大模型'
+                      : '追踪任务会用这个大模型来整理简报；不选则使用设置里的默认模型'}
+                </p>
               </div>
 
               {/* 执行频率 */}

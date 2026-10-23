@@ -185,6 +185,7 @@ export interface TrackingProjectRecord {
   task_type: TrackingTaskType;
   enabled: boolean;
   permissions: TrackingPermission[];
+  model?: string; // 指定使用的大模型，空则用设置页默认模型
   last_run_at?: string;
   next_run_at?: string;
   created_at: string;
@@ -204,6 +205,7 @@ export interface TrackingRunRecord {
   items_found?: number;
   duration_ms?: number;
   process_log?: string[];
+  model_used?: string; // 本次执行实际使用的大模型
 }
 
 // ========== JSON File Storage ==========
