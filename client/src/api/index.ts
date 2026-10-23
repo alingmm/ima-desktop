@@ -22,16 +22,28 @@ async function request<T>(endpoint: string, options: RequestOptions = {}, timeou
   } catch (err: any) {
     clearTimeout(timer);
     if (err?.name === 'AbortError') {
-      throw new Error('请求超时，请检查服务是否正常或网络连接');
+      throw new Error('请求超时，请检查网络后重试');
     }
-    throw new Error(err?.message || '网络请求失败');
+    // 把浏览器抛出的英文网络异常统一翻译成人话
+    const raw = String(err?.message || '');
+    if (/Failed to fetch|NetworkError|Network request failed|load failed/i.test(raw)) {
+      throw new Error('网络连接失败，请检查网络后重试');
+    }
+    throw new Error(raw || '网络连接失败，请检查网络后重试');
   } finally {
     clearTimeout(timer);
   }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Request failed' }));
-    const err = new Error(error.message || error.error || `HTTP ${response.status}`) as Error & { error?: string; code?: string };
+    const fallback = response.status >= 500
+      ? '服务暂时开小差了，请稍后重试'
+      : response.status === 404
+        ? '没找到相关内容'
+        : response.status === 403
+          ? '没有权限执行这个操作'
+          : '操作失败，请稍后重试';
+    const err = new Error(error.message || error.error || fallback) as Error & { error?: string; code?: string };
     err.error = error.error;
     err.code = error.error;
     throw err;

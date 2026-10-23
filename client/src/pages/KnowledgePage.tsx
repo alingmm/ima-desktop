@@ -22,6 +22,7 @@ import {
 import { knowledgeApi, notesApi } from '../api';
 import type { KnowledgeBase, Document } from '../types';
 import { useToast, showApiError } from '../components/Toast';
+import { formatFileSize as formatFileSizeZh } from '../utils/format';
 
 function KnowledgePage() {
   const toast = useToast();
@@ -349,11 +350,7 @@ function KnowledgePage() {
     }
   };
 
-  const formatFileSize = (bytes: number) => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
+  const formatFileSize = (bytes: number) => formatFileSizeZh(bytes);
 
   return (
     <div className="h-full flex">

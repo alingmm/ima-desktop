@@ -5,6 +5,7 @@ import {
   insertOne,
 } from '../storage/json-storage';
 import { TaskExecutor, TaskContext, TaskResult } from './registry';
+import { friendlyTaskError } from '../utils/errors';
 
 // 追踪简报执行器
 // 权限依赖: SEARCH + LLM + WRITE (+ NOTIFY 可选，由调度层处理)
@@ -119,11 +120,12 @@ ${sourcesText}`;
           model_used: modelUsed,
         };
       } catch (err: any) {
-        log(`执行出错：${err.message || String(err)}`);
+        const friendly = friendlyTaskError(err);
+        log(`执行出错：${friendly}`);
         return {
           success: false,
           error_code: err.error_code || err.code || 'TASK_FAILED',
-          error_message: err.message || String(err),
+          error_message: friendly,
           process_log: processLog,
           model_used: modelUsed,
         };

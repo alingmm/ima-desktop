@@ -325,6 +325,7 @@ function ModelSettings() {
   const [available, setAvailable] = useState<boolean | null>(null);
   const [checkError, setCheckError] = useState('');
   const [pulling, setPulling] = useState(false);
+  const [pullError, setPullError] = useState('');
   const [pullModelName, setPullModelName] = useState('');
   const [streamOutput, setStreamOutput] = useState(true);
 
@@ -441,12 +442,14 @@ function ModelSettings() {
   const pullModel = async () => {
     if (!pullModelName.trim()) return;
     setPulling(true);
+    setPullError('');
     try {
       await localModelApi.pullModel(pullModelName.trim(), ollamaUrlInput);
       setPullModelName('');
+      toastSuccess('模型下载任务已开始，请稍候在本地模型列表查看');
       loadModels();
     } catch (e: any) {
-      alert('拉取失败: ' + (e.message || e));
+      setPullError(e?.message || '下载失败，请确认 Ollama 已启动后重试');
     } finally {
       setPulling(false);
     }
@@ -813,6 +816,9 @@ function ModelSettings() {
             <p className="text-xs text-[var(--color-text-muted)]">
               从 Ollama 模型库下载，查看：<a href="https://ollama.com/library" target="_blank" rel="noreferrer" className="underline">ollama.com/library</a>
             </p>
+            {pullError && (
+              <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{pullError}</p>
+            )}
           </div>
         )}
       </div>

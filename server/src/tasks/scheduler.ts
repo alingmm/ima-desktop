@@ -25,6 +25,7 @@ import {
 import { createTrackingExecutor } from './tracking-executor';
 import { createGoalExecutor } from './goal-executor';
 import { getNextRunFromCron } from '../utils/cron';
+import { friendlyTaskError } from '../utils/errors';
 
 // 执行中的项目 id 集合（防止并发）
 const runningProjects = new Set<string>();
@@ -265,9 +266,10 @@ export async function runProject(
   } catch (err: any) {
     // 系统异常
     const duration = Date.now() - startTime;
+    const friendly = friendlyTaskError(err);
     updateById('tracking_runs', run.id, {
       status: 'failed',
-      error_message: err.message || String(err),
+      error_message: friendly,
       error_code: err.error_code || 'INTERNAL_ERROR',
       duration_ms: duration,
     });
@@ -275,7 +277,7 @@ export async function runProject(
     return {
       success: false,
       error_code: err.error_code || 'INTERNAL_ERROR',
-      error_message: err.message || String(err),
+      error_message: friendly,
       run_id: run.id,
     };
   } finally {

@@ -7,6 +7,7 @@ import {
 } from '../storage/json-storage';
 import { requestToolExecution } from '../services/tools';
 import { TaskExecutor, TaskContext, TaskResult } from './registry';
+import { friendlyTaskError } from '../utils/errors';
 
 // 自主执行（目标 Agent）执行器 —— 实现 ReAct 循环
 // 权限依赖: SEARCH + LLM + WRITE (+ 内部会用到 remember 写入记忆)
@@ -349,7 +350,7 @@ ${stepSummary ? `已执行过的动作与结果（供你参考，避免重复）
         return {
           success: false,
           error_code: err.error_code || 'TASK_FAILED',
-          error_message: err.message || String(err),
+          error_message: friendlyTaskError(err),
           process_log: runLog,
           model_used: modelUsed,
         };

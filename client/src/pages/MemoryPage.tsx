@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { memoryApi } from '../api';
 import { useToast, showApiError } from '../components/Toast';
+import { formatDateTime } from '../utils/format';
 
 type MemoryCategory = '偏好' | '事实' | '结论' | '任务';
 type MemorySource = 'auto' | 'manual' | 'chat';
@@ -52,14 +53,7 @@ const CATEGORY_CONFIG: {
 ];
 
 function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return formatDateTime(iso);
 }
 
 export default function MemoryPage() {

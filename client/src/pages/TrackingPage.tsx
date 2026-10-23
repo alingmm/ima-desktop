@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { trackingApi, notesApi, chatApi } from '../api';
 import { showApiError, useToast } from '../components/Toast';
+import { formatShortDateTime, formatDurationZh, formatDateTimeWithWeek } from '../utils/format';
 import type { ScheduleKind, ScheduleFormValue } from '../utils/cron';
 import {
   DEFAULT_SCHEDULE_FORM,
@@ -143,31 +144,16 @@ const WEEKDAY_OPTIONS = [
 
 function formatTime(iso?: string): string {
   if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return formatShortDateTime(iso);
 }
 
 function formatDuration(ms?: number): string {
-  if (!ms) return '';
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
+  return formatDurationZh(ms ?? undefined);
 }
 
 // 预览用：带周几的时间格式
 function formatPreviewTime(d: Date): string {
-  const weekNames = ['日', '一', '二', '三', '四', '五', '六'];
-  const base = d.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-  return `${base} 周${weekNames[d.getDay()]}`;
+  return formatDateTimeWithWeek(d);
 }
 
 export default function TrackingPage() {
@@ -827,7 +813,6 @@ export default function TrackingPage() {
 
                             {run.error_message && (
                               <p className="text-sm text-red-400 mt-1">
-                                {run.error_code && `[${run.error_code}] `}
                                 {run.error_message}
                               </p>
                             )}
@@ -1182,7 +1167,7 @@ export default function TrackingPage() {
                       type="text"
                       value={scheduleForm.customCron}
                       onChange={(e) => setScheduleForm({ ...scheduleForm, customCron: e.target.value })}
-                      placeholder="Cron 表达式，如：0 9 * * *"
+                      placeholder="定时表达式，如：0 9 * * *"
                       className="w-full px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white placeholder-[var(--color-text-muted)] focus:outline-none focus:border-blue-500 font-mono text-sm"
                     />
                     <p className="text-xs text-[var(--color-text-muted)] mt-1.5">
