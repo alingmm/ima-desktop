@@ -86,7 +86,7 @@ function VideoPreview({
   const [expanded, setExpanded] = useState(false);
   const desc = result.description || '';
   const preview = expanded ? desc : desc.slice(0, 600);
-  const duration = formatDuration(result.duration);
+  const duration = formatDuration(result.duration_seconds);
   return (
     <div>
       <div className="p-4 bg-[#0f1419] border border-[#30363d] rounded-xl">

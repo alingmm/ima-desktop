@@ -375,7 +375,7 @@ export default function TrackingPage() {
       const result = await trackingApi.runProject(project.id);
       if (result.success) {
         if (result.paused) {
-          toast.info('任务已暂停，等你确认后继续', '已暂停');
+          toast.info('任务已暂停，等你确认后继续');
         } else {
           toast.success('执行完成');
         }
@@ -413,7 +413,7 @@ export default function TrackingPage() {
       });
       if (result.success) {
         if (result.paused) {
-          toast.info('任务又暂停了，可继续补充方向', '已暂停');
+          toast.info('任务又暂停了，可继续补充方向');
         } else {
           toast.success('继续执行完成');
         }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ShieldAlert, ShieldCheck, Terminal, AppWindow, X } from 'lucide-react';
+import { ShieldAlert, ShieldCheck, X } from 'lucide-react';
 import { toolsApi } from '../api';
 import type { ToolPendingItem } from '../api';
 import { useToast } from './Toast';
@@ -68,7 +68,6 @@ export default function PendingApprovalWatcher() {
 
   const isHigh = current.risk_level === 'high';
   const isCommand = current.action_type === 'run_command';
-  const ActionIcon = isCommand ? Terminal : AppWindow;
   const actionLabel = isCommand ? '执行命令' : '打开应用/链接';
   const sourceLabel = current.source === 'agent' ? '来自「追踪」自主任务' : '来自手动操作';
 
