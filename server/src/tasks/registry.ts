@@ -2,6 +2,8 @@
 // 新任务类型只需注册 executor 即可，不修改调度逻辑
 
 import {
+  GoalStateSnapshot,
+  AgentTraceStats,
   TrackingPermission,
   TrackingProjectRecord,
   TrackingRunRecord,
@@ -10,6 +12,9 @@ import {
 export interface TaskContext {
   userId: string;
   project: TrackingProjectRecord;
+  resumeState?: GoalStateSnapshot; // 断点续跑：上次暂停的快照
+  userGuidance?: string; // 断点续跑：用户补充/纠偏的指令
+  runId?: string; // 本次执行记录 ID（工具审批关联用）
 }
 
 export interface TaskResult {
@@ -20,6 +25,11 @@ export interface TaskResult {
   briefing_note_id?: string;
   items_found?: number;
   process_log?: string[];
+  model_used?: string;
+  paused?: boolean; // 是否暂停（撞上限/待确认/需用户输入）
+  goal_state?: GoalStateSnapshot; // 暂停时的断点快照
+  confirm_prompt?: string; // 暂停时给用户看的说明/问题
+  trace?: AgentTraceStats; // 本次执行轨迹统计（感知/执行分类计数 + 模型来源）
 }
 
 export interface TaskExecutor {

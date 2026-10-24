@@ -3,6 +3,8 @@ import {
   selectAll,
   insertOne,
   MemoryCategory,
+  MemoryRecord,
+  MemorySource,
 } from '../storage/json-storage';
 
 // ========== 记忆召回（关键词/子串匹配，不强依赖向量模型） ==========
@@ -11,52 +13,78 @@ export function recallMemories(
   query: string,
   limit = 5,
 ): { id: string; content: string; category: MemoryCategory; created_at: string }[] {
-  if (!query || !query.trim()) return [];
-
-  const q = query.trim().toLowerCase();
   const all = selectAll('memories').filter((m) => m.user_id === userId);
-  const keywords = q
-    .split(/[\s\p{P}]+/u)
-    .filter((w) => w.length > 1);
+  const q = (query || '').trim().toLowerCase();
 
-  const scored = all
-    .map((mem) => {
-      const text = (mem.content || '').toLowerCase();
-      let score = 0;
-      // 子串匹配
-      if (q.length > 1 && text.includes(q)) score += 3;
-      // 关键词命中
-      if (keywords.length > 0) {
-        for (const kw of keywords) {
-          if (text.includes(kw)) score += 1;
+  // 有关键词时按相关度召回
+  if (q) {
+    const keywords = q
+      .split(/[\s\p{P}]+/u)
+      .filter((w) => w.length > 1);
+
+    const scored = all
+      .map((mem) => {
+        const text = (mem.content || '').toLowerCase();
+        let score = 0;
+        // 子串匹配
+        if (q.length > 1 && text.includes(q)) score += 3;
+        // 关键词命中
+        if (keywords.length > 0) {
+          for (const kw of keywords) {
+            if (text.includes(kw)) score += 1;
+          }
         }
-      }
-      // 标签命中
-      for (const tag of mem.tags || []) {
-        if (q.includes(tag.toLowerCase()) || tag.toLowerCase().includes(q)) score += 2;
-      }
-      return { mem, score };
-    })
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score)
+        // 标签命中
+        for (const tag of mem.tags || []) {
+          if (q.includes(tag.toLowerCase()) || tag.toLowerCase().includes(q)) score += 2;
+        }
+        return { mem, score };
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+
+    if (scored.length > 0) {
+      return scored.map((x) => ({
+        id: x.mem.id,
+        content: x.mem.content,
+        category: x.mem.category,
+        created_at: x.mem.created_at,
+      }));
+    }
+  }
+
+  // 兜底：无关键词命中时，注入最近的「偏好/事实」记忆，保证个性化上下文稳定
+  const fallback = all
+    .filter((m) => m.category === '偏好' || m.category === '事实')
+    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
     .slice(0, limit);
 
-  return scored.map((x) => ({
-    id: x.mem.id,
-    content: x.mem.content,
-    category: x.mem.category,
-    created_at: x.mem.created_at,
+  return fallback.map((m) => ({
+    id: m.id,
+    content: m.content,
+    category: m.category,
+    created_at: m.created_at,
   }));
 }
 
+// ========== 记忆提炼结果 ==========
+export interface ExtractedMemory {
+  memory: MemoryRecord | null;
+  // saved=已存入；duplicate=已有相似记忆跳过；none=无可长期记住的信息；error=提炼失败
+  reason: 'saved' | 'duplicate' | 'none' | 'error';
+}
+
 // ========== 自动记忆：对话结束后提炼值得长期记住的信息 ==========
+// source：auto=对话后自动提炼；chat=用户点「记住这条」手动触发
 export async function extractMemoryFromConversation(
   userId: string,
   userText: string,
   assistantText: string,
-): Promise<boolean> {
+  source: MemorySource = 'auto',
+): Promise<ExtractedMemory> {
   try {
-    if (!userText.trim() || !assistantText.trim()) return false;
+    if (!userText.trim() || !assistantText.trim()) return { memory: null, reason: 'none' };
 
     const prompt = `请判断以下这段用户与 AI 的对话中，是否存在值得长期记住的信息（如用户偏好、个人事实、结论、重要决定等）。仅当信息对未来的对话有长期价值时才输出，可忽略日常寒暄、临时问题、一次性请求。
 
@@ -80,14 +108,14 @@ AI：${assistantText.slice(0, 1500)}
     } catch {
       // 尝试从花括号中提取
       const m = content.match(/\{[\s\S]*\}/);
-      if (!m) return false;
+      if (!m) return { memory: null, reason: 'none' };
       parsed = JSON.parse(m[0]);
     }
 
-    if (!parsed || parsed.has_memory !== true || !parsed.content) return false;
+    if (!parsed || parsed.has_memory !== true || !parsed.content) return { memory: null, reason: 'none' };
 
     const content2 = String(parsed.content).trim();
-    if (!content2) return false;
+    if (!content2) return { memory: null, reason: 'none' };
 
     const category: MemoryCategory =
       parsed.category === '偏好' || parsed.category === '事实' ||
@@ -97,24 +125,25 @@ AI：${assistantText.slice(0, 1500)}
 
     // 去重：若已有高度相似的记忆则跳过
     if (isDuplicate(userId, content2)) {
-      return false;
+      return { memory: null, reason: 'duplicate' };
     }
 
     const now = new Date().toISOString();
-    insertOne('memories', {
+    const memory = insertOne('memories', {
       id: crypto.randomUUID(),
       user_id: userId,
       content: content2,
       category,
       tags: [category],
+      source,
       created_at: now,
       updated_at: now,
     });
-    return true;
+    return { memory: memory as MemoryRecord, reason: 'saved' };
   } catch (err) {
     // 记忆提炼失败不影响主流程
     console.error('Memory extraction error:', err);
-    return false;
+    return { memory: null, reason: 'error' };
   }
 }
 

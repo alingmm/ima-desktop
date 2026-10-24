@@ -21,9 +21,24 @@ import {
   AlertCircle,
   Sparkles,
   Target,
+  Cpu,
+  RefreshCw,
+  PauseCircle,
+  MessageSquare,
 } from 'lucide-react';
-import { trackingApi, notesApi } from '../api';
+import { trackingApi, notesApi, chatApi } from '../api';
+import type { AgentTraceStats } from '../api';
 import { showApiError, useToast } from '../components/Toast';
+import { formatShortDateTime, formatDurationZh, formatDateTimeWithWeek } from '../utils/format';
+import type { ScheduleKind, ScheduleFormValue } from '../utils/cron';
+import {
+  DEFAULT_SCHEDULE_FORM,
+  formToSchedule,
+  scheduleToForm,
+  describeScheduleZh,
+  previewNextRun,
+  isValidCron,
+} from '../utils/cron';
 
 type TrackingPermission = 'SEARCH' | 'LLM' | 'WRITE' | 'NOTIFY';
 type TrackingFrequency = 'hourly' | 'daily' | 'weekly' | 'custom';
@@ -37,16 +52,27 @@ interface TrackingProject {
   task_type: string;
   enabled: boolean;
   permissions: TrackingPermission[];
+  model?: string;
+  max_rounds?: number;
   last_run_at?: string;
   next_run_at?: string;
   created_at: string;
+}
+
+interface GoalStateSnapshot {
+  round: number;
+  step_summary: string;
+  run_log: string[];
+  final_answer: string;
+  model_used?: string;
+  trace?: AgentTraceStats;
 }
 
 interface TrackingRun {
   id: string;
   project_id: string;
   run_at: string;
-  status: 'success' | 'failed' | 'running' | 'skipped';
+  status: 'success' | 'failed' | 'running' | 'skipped' | 'paused';
   error_message?: string;
   error_code?: string;
   briefing_note_id?: string;
@@ -54,6 +80,11 @@ interface TrackingRun {
   items_found?: number;
   duration_ms?: number;
   process_log?: string[];
+  model_used?: string;
+  goal_state?: GoalStateSnapshot;
+  awaiting_confirm?: boolean;
+  confirm_prompt?: string;
+  trace?: AgentTraceStats;
 }
 
 const PERMISSION_CONFIG: {
@@ -93,28 +124,39 @@ const PERMISSION_CONFIG: {
   },
 ];
 
-const FREQUENCY_OPTIONS: { value: TrackingFrequency; label: string; desc: string }[] = [
-  { value: 'hourly', label: '每小时', desc: '整点执行' },
-  { value: 'daily', label: '每天', desc: '上午 9:00 执行' },
-  { value: 'weekly', label: '每周', desc: '每周一 9:00 执行' },
-  { value: 'custom', label: '自定义（Cron）', desc: '使用 Cron 表达式' },
+// 频率大类选项（中文习惯，下拉选择）
+const SCHEDULE_KIND_OPTIONS: { value: ScheduleKind; label: string }[] = [
+  { value: 'hourly', label: '每小时（整点）' },
+  { value: 'daily', label: '每天' },
+  { value: 'weekly', label: '每周' },
+  { value: 'monthly', label: '每月' },
+  { value: 'interval_hours', label: '每隔几小时' },
+  { value: 'interval_days', label: '每隔几天' },
+  { value: 'custom', label: '高级：自定义表达式' },
+];
+
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: '周一' },
+  { value: 2, label: '周二' },
+  { value: 3, label: '周三' },
+  { value: 4, label: '周四' },
+  { value: 5, label: '周五' },
+  { value: 6, label: '周六' },
+  { value: 0, label: '周日' },
 ];
 
 function formatTime(iso?: string): string {
   if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return formatShortDateTime(iso);
 }
 
 function formatDuration(ms?: number): string {
-  if (!ms) return '';
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
+  return formatDurationZh(ms ?? undefined);
+}
+
+// 预览用：带周几的时间格式
+function formatPreviewTime(d: Date): string {
+  return formatDateTimeWithWeek(d);
 }
 
 export default function TrackingPage() {
@@ -134,17 +176,47 @@ export default function TrackingPage() {
   const [formTaskType, setFormTaskType] = useState<'tracking' | 'goal'>('tracking');
   const [formName, setFormName] = useState('');
   const [formTopic, setFormTopic] = useState('');
-  const [formFrequency, setFormFrequency] = useState<TrackingFrequency>('daily');
-  const [formCron, setFormCron] = useState('0 9 * * *');
+  const [scheduleForm, setScheduleForm] = useState<ScheduleFormValue>(DEFAULT_SCHEDULE_FORM);
   const [formPermissions, setFormPermissions] = useState<TrackingPermission[]>([
     'SEARCH',
     'LLM',
     'WRITE',
   ]);
+  const [formModel, setFormModel] = useState(''); // 空表示跟随默认模型
+  const [formMaxRounds, setFormMaxRounds] = useState(''); // 空表示默认 10 轮
   const [submitting, setSubmitting] = useState(false);
+
+  // 断点续跑 / 互动纠偏：正在输入纠偏指令的 run、纠偏文本、续跑中标记
+  const [guidanceDrafts, setGuidanceDrafts] = useState<Record<string, string>>({});
+  const [resumingRunId, setResumingRunId] = useState<string | null>(null);
+  const [terminatedRunIds, setTerminatedRunIds] = useState<Set<string>>(new Set());
+
+  // 可选大模型列表（云端 + Ollama 本地）
+  const [availableModels, setAvailableModels] = useState<{ id: string; label: string }[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
 
   useEffect(() => {
     loadProjects();
+  }, []);
+
+  // 加载可选大模型（追踪任务使用云端对话模型生成简报）
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        setModelsLoading(true);
+        const res = await chatApi.getModels();
+        const list = (res.models || []).map((m: any) => ({
+          id: m.name || m.id,
+          label: m.name || m.id,
+        }));
+        setAvailableModels(list);
+      } catch (e) {
+        console.error('加载模型列表失败:', e);
+      } finally {
+        setModelsLoading(false);
+      }
+    };
+    loadModels();
   }, []);
 
   useEffect(() => {
@@ -182,14 +254,20 @@ export default function TrackingPage() {
     }
   };
 
+  // 表单的中文时间选择 → 存储用的 { frequency, cron_expression }
+  const formToSchedulePayload = (): { frequency: TrackingFrequency; cron_expression?: string } => {
+    const { frequency, cronExpression } = formToSchedule(scheduleForm);
+    return { frequency, cron_expression: cronExpression };
+  };
+
   const handleCreateClick = () => {
     setEditingProject(null);
     setFormTaskType('tracking');
     setFormName('');
     setFormTopic('');
-    setFormFrequency('daily');
-    setFormCron('0 9 * * *');
+    setScheduleForm(DEFAULT_SCHEDULE_FORM);
     setFormPermissions(['SEARCH', 'LLM', 'WRITE']);
+    setFormModel('');
     setShowCreateModal(true);
   };
 
@@ -217,9 +295,10 @@ export default function TrackingPage() {
         task_type: formTaskType,
         name: formName,
         topic: formTopic,
-        frequency: formFrequency,
-        cron_expression: formFrequency === 'custom' ? formCron : undefined,
+        ...formToSchedulePayload(),
         permissions: formPermissions,
+        model: formModel,
+        max_rounds: formMaxRounds.trim() ? Number(formMaxRounds) : undefined,
       });
       setShowPermissionModal(true);
       setShowCreateModal(false);
@@ -236,9 +315,10 @@ export default function TrackingPage() {
         task_type: formTaskType,
         name: formName,
         topic: formTopic,
-        frequency: formFrequency,
-        cron_expression: formFrequency === 'custom' ? formCron : undefined,
+        ...formToSchedulePayload(),
         permissions: formPermissions,
+        model: formModel,
+        max_rounds: formMaxRounds.trim() ? Number(formMaxRounds) : undefined,
       };
 
       const res = await trackingApi.createProject(data);
@@ -254,8 +334,7 @@ export default function TrackingPage() {
         setPendingProject({
           name: formName,
           topic: formTopic,
-          frequency: formFrequency,
-          cron_expression: formFrequency === 'custom' ? formCron : undefined,
+          ...formToSchedulePayload(),
         });
         setShowPermissionModal(true);
       } else {
@@ -295,7 +374,11 @@ export default function TrackingPage() {
       setRunningIds((prev) => new Set(prev).add(project.id));
       const result = await trackingApi.runProject(project.id);
       if (result.success) {
-        toast.success('执行完成');
+        if (result.paused) {
+          toast.info('任务已暂停，等你确认后继续');
+        } else {
+          toast.success('执行完成');
+        }
       } else if (result.error === 'PERMISSION_REQUIRED') {
         setPendingProject(project);
         setFormPermissions(project.permissions);
@@ -318,14 +401,46 @@ export default function TrackingPage() {
     }
   };
 
+  // 断点续跑：从暂停的 run 快照接着执行，可携带用户补充/纠偏指令
+  const handleResumeRun = async (project: TrackingProject, run: TrackingRun) => {
+    if (runningIds.has(project.id) || resumingRunId) return;
+    const guidance = (guidanceDrafts[run.id] || '').trim();
+    try {
+      setResumingRunId(run.id);
+      const result = await trackingApi.runProject(project.id, {
+        resume_run_id: run.id,
+        guidance: guidance || undefined,
+      });
+      if (result.success) {
+        if (result.paused) {
+          toast.info('任务又暂停了，可继续补充方向');
+        } else {
+          toast.success('继续执行完成');
+        }
+      } else {
+        toast.error(result.message || '执行失败');
+      }
+      // 旧的暂停卡片收起（已基于它续跑出新记录）
+      setTerminatedRunIds((prev) => new Set(prev).add(run.id));
+      setGuidanceDrafts((prev) => ({ ...prev, [run.id]: '' }));
+      loadRuns(project.id);
+      loadProjects();
+    } catch (e) {
+      showApiError(e, toast);
+    } finally {
+      setResumingRunId(null);
+    }
+  };
+
   // 打开编辑弹窗，预填当前项目信息
   const handleEdit = (project: TrackingProject) => {
     setEditingProject(project);
     setFormTaskType(project.task_type === 'goal' ? 'goal' : 'tracking');
     setFormName(project.name);
     setFormTopic(project.topic);
-    setFormFrequency(project.frequency === 'hourly' || project.frequency === 'daily' || project.frequency === 'weekly' || project.frequency === 'custom' ? project.frequency : 'daily');
-    setFormCron(project.cron_expression || '0 9 * * *');
+    setScheduleForm(scheduleToForm(project.frequency, project.cron_expression));
+    setFormModel(project.model || '');
+    setFormMaxRounds(project.max_rounds ? String(project.max_rounds) : '');
     setShowCreateModal(true);
   };
 
@@ -337,8 +452,9 @@ export default function TrackingPage() {
       const payload: Record<string, any> = {
         name: formName,
         topic: formTopic,
-        frequency: formFrequency,
-        cron_expression: formFrequency === 'custom' ? formCron : undefined,
+        ...formToSchedulePayload(),
+        model: formModel, // 空字符串表示跟随默认模型
+        max_rounds: formMaxRounds.trim() ? Number(formMaxRounds) : undefined,
       };
       const res = await trackingApi.updateProject(editingProject.id, payload);
       setProjects(projects.map((p) => (p.id === editingProject.id ? res.project : p)));
@@ -464,8 +580,7 @@ export default function TrackingPage() {
                       <div className="flex items-center gap-2 mt-2 text-xs text-[var(--color-text-muted)]">
                         <Clock size={12} />
                         <span>
-                          {FREQUENCY_OPTIONS.find((f) => f.value === project.frequency)?.label ||
-                            project.frequency}
+                          {describeScheduleZh(project.frequency, project.cron_expression)}
                         </span>
                       </div>
                     </div>
@@ -545,6 +660,10 @@ export default function TrackingPage() {
                         ? `目标：${selectedProject.topic}`
                         : `追踪主题：${selectedProject.topic}`}
                     </p>
+                    <p className="text-xs text-[var(--color-text-muted)] mt-1.5 flex items-center gap-1.5">
+                      <Cpu size={12} className="text-blue-400" />
+                      使用模型：{selectedProject.model ? selectedProject.model : '默认模型'}
+                    </p>
                   </div>
                   <span
                     className={`px-2.5 py-1 rounded-full text-xs font-medium ${
@@ -561,8 +680,7 @@ export default function TrackingPage() {
                   <div>
                     <div className="text-[var(--color-text-muted)] text-xs mb-1">执行频率</div>
                     <div className="text-white">
-                      {FREQUENCY_OPTIONS.find((f) => f.value === selectedProject.frequency)
-                        ?.label || selectedProject.frequency}
+                      {describeScheduleZh(selectedProject.frequency, selectedProject.cron_expression)}
                     </div>
                   </div>
                   <div>
@@ -611,6 +729,22 @@ export default function TrackingPage() {
                   执行历史
                 </h3>
 
+                {/* 正在执行横幅：显示当前使用的大模型 */}
+                {runningIds.has(selectedProject.id) && (
+                  <div className="mb-3 flex items-center gap-2.5 px-4 py-3 rounded-lg bg-blue-500/10 border border-blue-500/30 text-sm">
+                    <Loader2 size={16} className="animate-spin text-blue-400 flex-shrink-0" />
+                    <div>
+                      <span className="text-blue-300">正在执行追踪任务…</span>
+                      <span className="text-[var(--color-text-muted)] ml-2">
+                        使用模型：{selectedProject.model || '默认模型'}
+                      </span>
+                      <div className="text-xs text-[var(--color-text-muted)] mt-0.5">
+                        联网搜索 → 调用大模型整理简报 → 保存到笔记，请稍候
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {runsLoading ? (
                   <div className="flex items-center justify-center h-32 text-[var(--color-text-muted)]">
                     <Loader2 size={18} className="animate-spin mr-2" />
@@ -648,11 +782,15 @@ export default function TrackingPage() {
                               {run.status === 'skipped' && (
                                 <AlertCircle size={16} className="text-yellow-500 flex-shrink-0" />
                               )}
-                              <span className="text-sm font-medium">
+                              {run.status === 'paused' && (
+                                <PauseCircle size={16} className="text-amber-500 flex-shrink-0" />
+                              )}
+                              <span className={`text-sm font-medium ${run.status === 'paused' ? 'text-amber-400' : ''}`}>
                                 {run.status === 'success' && '执行成功'}
                                 {run.status === 'failed' && '执行失败'}
                                 {run.status === 'running' && '执行中'}
                                 {run.status === 'skipped' && '已跳过'}
+                                {run.status === 'paused' && '等你确认'}
                               </span>
                               <span className="text-xs text-[var(--color-text-muted)]">
                                 {formatTime(run.run_at)}
@@ -662,7 +800,46 @@ export default function TrackingPage() {
                                   · {formatDuration(run.duration_ms)}
                                 </span>
                               )}
+                              {run.model_used && (
+                                <span
+                                  className={`text-xs flex items-center gap-1 ${run.trace?.model_source === 'local' ? 'text-green-400' : 'text-blue-400'}`}
+                                  title={run.trace?.model_source === 'local' ? '本次使用本地模型运行，数据不出本机' : '本次使用云端模型'}
+                                >
+                                  <Cpu size={11} />
+                                  {run.model_used}
+                                  {run.trace?.model_source === 'local' && (
+                                    <span className="px-1 py-px rounded bg-green-500/15 text-[10px]">本地</span>
+                                  )}
+                                </span>
+                              )}
                             </div>
+
+                            {run.trace && (() => {
+                              const t = run.trace!;
+                              const chips: Array<{ label: string; n?: number }> = [
+                                { label: '联网搜索', n: t.search_count },
+                                { label: '抓取网页', n: t.capture_count },
+                                { label: '知识库检索', n: t.knowledge_search_count },
+                                { label: '写入笔记', n: t.note_count },
+                                { label: '存入知识库', n: t.knowledge_write_count },
+                                { label: '记住信息', n: t.memory_count },
+                                { label: '打开应用', n: t.open_app_count },
+                                { label: '执行命令', n: t.command_count },
+                              ].filter((c) => (c.n || 0) > 0);
+                              if (chips.length === 0) return null;
+                              return (
+                                <div className="flex flex-wrap gap-1.5 mt-2">
+                                  {chips.map((c) => (
+                                    <span
+                                      key={c.label}
+                                      className="px-1.5 py-0.5 rounded-md bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[11px] text-[var(--color-text-secondary)]"
+                                    >
+                                      {c.label} × {c.n}
+                                    </span>
+                                  ))}
+                                </div>
+                              );
+                            })()}
 
                             {run.summary && (
                               <p className="text-sm text-[var(--color-text-secondary)] line-clamp-2 mt-1">
@@ -672,7 +849,6 @@ export default function TrackingPage() {
 
                             {run.error_message && (
                               <p className="text-sm text-red-400 mt-1">
-                                {run.error_code && `[${run.error_code}] `}
                                 {run.error_message}
                               </p>
                             )}
@@ -683,7 +859,7 @@ export default function TrackingPage() {
                               </p>
                             )}
 
-                            {run.process_log && run.process_log.length > 0 && selectedProject.task_type === 'goal' && (
+                            {run.process_log && run.process_log.length > 0 && (
                               <div className="mt-2 pt-2 border-t border-[var(--color-border)]">
                                 <div className="text-xs text-[var(--color-text-muted)] mb-1.5 flex items-center gap-1.5">
                                   <Sparkles size={12} className="text-purple-400" />
@@ -698,6 +874,77 @@ export default function TrackingPage() {
                                   ))}
                                 </div>
                               </div>
+                            )}
+
+                            {/* 暂停待确认：显示卡在哪 + 纠偏输入 + 继续/终止 */}
+                            {run.status === 'paused' && !terminatedRunIds.has(run.id) && (
+                              <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                                <div className="flex items-start gap-2 mb-2">
+                                  <MessageSquare size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-xs font-medium text-amber-300 mb-0.5">
+                                      任务暂停了，需要你确认
+                                      {run.goal_state?.round !== undefined && (
+                                        <span className="ml-1.5 text-amber-400/70 font-normal">
+                                          （已推进 {run.goal_state.round} 轮）
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+                                      {run.confirm_prompt || '模型在关键阶段拿不准方向，想听听你的意见。'}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <textarea
+                                  value={guidanceDrafts[run.id] || ''}
+                                  onChange={(e) =>
+                                    setGuidanceDrafts((prev) => ({ ...prev, [run.id]: e.target.value }))
+                                  }
+                                  placeholder="可以补充方向或纠正偏差（比如：重点看最近的突破、别跑题了…），也可以不填直接继续"
+                                  rows={2}
+                                  className="w-full text-xs px-2.5 py-2 rounded-md bg-[var(--color-input-bg,#161b22)] border border-[var(--color-border)] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-amber-500/50 resize-none"
+                                />
+
+                                <div className="flex items-center gap-2 mt-2">
+                                  <button
+                                    onClick={() => handleResumeRun(selectedProject!, run)}
+                                    disabled={resumingRunId === run.id || runningIds.has(selectedProject?.id || '')}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                  >
+                                    {resumingRunId === run.id ? (
+                                      <>
+                                        <Loader2 size={12} className="animate-spin" />
+                                        继续执行中…
+                                      </>
+                                    ) : (
+                                      <>
+                                        <RefreshCw size={12} />
+                                        接着上次继续执行
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      setTerminatedRunIds((prev) => new Set(prev).add(run.id))
+                                    }
+                                    disabled={resumingRunId === run.id}
+                                    className="px-3 py-1.5 text-xs rounded-md bg-white/5 hover:bg-white/10 text-[var(--color-text-secondary)] hover:text-white disabled:opacity-50 transition-colors"
+                                  >
+                                    到此为止
+                                  </button>
+                                </div>
+                                <p className="text-[10px] text-[var(--color-text-muted)] mt-1.5">
+                                  接着上次继续 = 保留之前的进展往下走，不会从头再来
+                                </p>
+                              </div>
+                            )}
+
+                            {/* 已终止的暂停 */}
+                            {run.status === 'paused' && terminatedRunIds.has(run.id) && (
+                              <p className="text-xs text-[var(--color-text-muted)] mt-2">
+                                已终止。需要时点上方「立即执行」重新发起。
+                              </p>
                             )}
                           </div>
 
@@ -824,35 +1071,139 @@ export default function TrackingPage() {
                 />
               </div>
 
-              {/* 执行频率 */}
+              {/* 使用的大模型 */}
+              <div>
+                <label className="block text-sm font-medium mb-2 flex items-center gap-1.5">
+                  <Cpu size={14} className="text-blue-400" />
+                  使用的大模型
+                </label>
+                <select
+                  value={formModel}
+                  onChange={(e) => setFormModel(e.target.value)}
+                  disabled={modelsLoading}
+                  className="w-full px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                >
+                  <option value="">跟随默认模型（推荐）</option>
+                  {availableModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-[var(--color-text-muted)] mt-1.5">
+                  {modelsLoading
+                    ? '正在读取可用模型…'
+                    : availableModels.length === 0
+                      ? '未读取到可用模型，请先在「设置」中配置大模型'
+                      : '追踪任务会用这个大模型来整理简报；不选则使用设置里的默认模型'}
+                </p>
+              </div>
+
+              {/* 执行轮数（仅目标执行/自主Agent 类型） */}
+              {formTaskType === 'goal' && (
+                <div>
+                  <label className="block text-sm font-medium mb-2 flex items-center gap-1.5">
+                    <RefreshCw size={14} className="text-blue-400" />
+                    单次执行轮数
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={formMaxRounds}
+                    onChange={(e) => setFormMaxRounds(e.target.value)}
+                    placeholder="默认 10 轮"
+                    className="w-full px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500"
+                  />
+                  <p className="text-xs text-[var(--color-text-muted)] mt-1.5">
+                    大模型每次最多规划/调用工具多少轮；跑满仍未完成会「暂停」等你确认，可以接着续跑而不是从头再来。默认 10 轮。
+                  </p>
+                </div>
+              )}
+
+              {/* 执行频率（中文习惯选择，无需懂 cron） */}
               <div>
                 <label className="block text-sm font-medium mb-2">执行频率</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {FREQUENCY_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.value}
-                      onClick={() => setFormFrequency(opt.value)}
-                      className={`p-3 rounded-lg border text-left transition-colors ${
-                        formFrequency === opt.value
-                          ? 'border-blue-500 bg-blue-500/10'
-                          : 'border-[var(--color-border)] hover:border-[var(--color-text-muted)]'
-                      }`}
+                <div className="flex gap-2">
+                  <select
+                    value={scheduleForm.kind}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, kind: e.target.value as ScheduleKind })}
+                    className="flex-1 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 text-sm"
+                  >
+                    {SCHEDULE_KIND_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  {scheduleForm.kind === 'weekly' && (
+                    <select
+                      value={scheduleForm.weekday}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, weekday: Number(e.target.value) })}
+                      className="w-24 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 text-sm"
                     >
-                      <div className="text-sm font-medium">{opt.label}</div>
-                      <div className="text-xs text-[var(--color-text-muted)] mt-0.5">
-                        {opt.desc}
-                      </div>
-                    </button>
-                  ))}
+                      {WEEKDAY_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  {scheduleForm.kind === 'monthly' && (
+                    <select
+                      value={scheduleForm.monthday}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, monthday: Number(e.target.value) })}
+                      className="w-24 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 text-sm"
+                    >
+                      {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                        <option key={d} value={d}>
+                          {d} 号
+                        </option>
+                      ))}
+                    </select>
+                  )}
+
+                  {(scheduleForm.kind === 'daily' ||
+                    scheduleForm.kind === 'weekly' ||
+                    scheduleForm.kind === 'monthly' ||
+                    scheduleForm.kind === 'interval_days') && (
+                    <input
+                      type="time"
+                      value={scheduleForm.time}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, time: e.target.value })}
+                      className="w-32 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 text-sm"
+                    />
+                  )}
+
+                  {(scheduleForm.kind === 'interval_hours' || scheduleForm.kind === 'interval_days') && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm text-[var(--color-text-secondary)]">每隔</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={scheduleForm.kind === 'interval_hours' ? 23 : 30}
+                        value={scheduleForm.interval}
+                        onChange={(e) =>
+                          setScheduleForm({ ...scheduleForm, interval: Number(e.target.value) || 1 })
+                        }
+                        className="w-20 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white focus:outline-none focus:border-blue-500 text-sm"
+                      />
+                      <span className="text-sm text-[var(--color-text-secondary)]">
+                        {scheduleForm.kind === 'interval_hours' ? '小时' : '天'}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
-                {formFrequency === 'custom' && (
+                {scheduleForm.kind === 'custom' && (
                   <div className="mt-3">
                     <input
                       type="text"
-                      value={formCron}
-                      onChange={(e) => setFormCron(e.target.value)}
-                      placeholder="Cron 表达式，如：0 9 * * *"
+                      value={scheduleForm.customCron}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, customCron: e.target.value })}
+                      placeholder="定时表达式，如：0 9 * * *"
                       className="w-full px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white placeholder-[var(--color-text-muted)] focus:outline-none focus:border-blue-500 font-mono text-sm"
                     />
                     <p className="text-xs text-[var(--color-text-muted)] mt-1.5">
@@ -860,6 +1211,31 @@ export default function TrackingPage() {
                     </p>
                   </div>
                 )}
+
+                {/* 下次执行预览 + 中文说明 */}
+                {(() => {
+                  const sched = formToSchedule(scheduleForm);
+                  const desc = describeScheduleZh(sched.frequency, sched.cronExpression);
+                  const next = previewNextRun(scheduleForm);
+                  const invalid = scheduleForm.kind === 'custom' && !isValidCron(scheduleForm.customCron);
+                  return (
+                    <div className="mt-3 flex items-start gap-2 text-xs rounded-lg bg-blue-500/5 border border-blue-500/20 px-3 py-2.5">
+                      <Clock size={13} className="text-blue-400 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <span className="text-blue-300">{desc}</span>
+                        {next && !invalid ? (
+                          <div className="text-[var(--color-text-muted)] mt-0.5">
+                            下次执行：{formatPreviewTime(next)}
+                          </div>
+                        ) : (
+                          <div className="text-red-400 mt-0.5">
+                            表达式无法识别，请检查格式
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* 权限预览（编辑模式不改权限，隐藏） */}

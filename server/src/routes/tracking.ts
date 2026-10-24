@@ -8,6 +8,7 @@ import {
   orderBy,
   TrackingProjectRecord,
   TrackingPermission,
+  GoalStateSnapshot,
 } from '../storage/json-storage';
 import { authMiddleware } from '../middleware/auth';
 import {
@@ -15,6 +16,7 @@ import {
   rescheduleProject,
   unscheduleProject,
 } from '../tasks/scheduler';
+import { isValidCron } from '../utils/cron';
 
 const router: Router = Router();
 
@@ -42,6 +44,7 @@ router.get('/projects', async (req: Request, res: Response) => {
         task_type: p.task_type,
         enabled: p.enabled,
         permissions: p.permissions,
+        model: (p as any).model,
         last_run_at: p.last_run_at,
         next_run_at: p.next_run_at,
         created_at: p.created_at,
@@ -72,7 +75,7 @@ router.get('/projects/:id', async (req: Request, res: Response) => {
 router.post('/projects', async (req: Request, res: Response) => {
   try {
     const userId = (req as any).userId;
-    const { name, topic, frequency, cron_expression, task_type, permissions } =
+    const { name, topic, frequency, cron_expression, task_type, permissions, model, max_rounds } =
       req.body;
 
     if (!name || !name.trim()) {
@@ -89,6 +92,19 @@ router.post('/projects', async (req: Request, res: Response) => {
       return res
         .status(400)
         .json({ error: 'Frequency is required', message: '请选择执行频率' });
+    }
+    if (frequency === 'custom') {
+      if (!cron_expression || !cron_expression.trim()) {
+        return res
+          .status(400)
+          .json({ error: 'Cron is required', message: '请设置执行时间' });
+      }
+      if (!isValidCron(cron_expression.trim())) {
+        return res.status(400).json({
+          error: 'Invalid cron',
+          message: '时间表达式格式不对，请检查（应为：分钟 小时 日 月 周，共 5 段）',
+        });
+      }
     }
 
     const validPermissions: TrackingPermission[] = ['SEARCH', 'LLM', 'WRITE', 'NOTIFY'];
@@ -107,6 +123,8 @@ router.post('/projects', async (req: Request, res: Response) => {
       task_type: task_type || 'tracking',
       enabled: true,
       permissions: perms,
+      model: model && model.trim() ? model.trim() : undefined,
+      max_rounds: max_rounds && Number(max_rounds) > 0 ? Number(max_rounds) : undefined,
       created_at: now,
       updated_at: now,
     });
@@ -133,11 +151,29 @@ router.patch('/projects/:id', async (req: Request, res: Response) => {
     }
 
     const update: Partial<TrackingProjectRecord> = {};
-    const fields = ['name', 'topic', 'frequency', 'cron_expression', 'enabled', 'permissions'] as const;
+    const fields = ['name', 'topic', 'frequency', 'cron_expression', 'enabled', 'permissions', 'model', 'max_rounds'] as const;
 
     for (const field of fields) {
       if (req.body[field] !== undefined) {
         (update as any)[field] = req.body[field];
+      }
+    }
+
+    // 模型为空字符串表示"跟随默认模型"，清除该字段
+    if (update.model !== undefined && !(update.model as string).trim()) {
+      delete update.model;
+    }
+
+    // 自定义频率校验 cron 表达式合法性（以更新后最终生效的值为准）
+    const finalFrequency = update.frequency ?? project.frequency;
+    const finalCron =
+      update.cron_expression !== undefined ? update.cron_expression : project.cron_expression;
+    if (finalFrequency === 'custom') {
+      if (!finalCron || !String(finalCron).trim() || !isValidCron(String(finalCron).trim())) {
+        return res.status(400).json({
+          error: 'Invalid cron',
+          message: '时间表达式格式不对，请检查（应为：分钟 小时 日 月 周，共 5 段）',
+        });
       }
     }
 
@@ -228,7 +264,18 @@ router.post('/projects/:id/run', async (req: Request, res: Response) => {
       return res.status(404).json({ error: '任务不存在' });
     }
 
-    const result = await runProject(req.params.id, 'manual');
+    // 断点续跑：resume_run_id 指定上次暂停的 run，取其断点快照；guidance 为用户补充/纠偏的指令
+    const { resume_run_id, guidance } = req.body || {};
+    let resumeState: GoalStateSnapshot | undefined;
+    if (resume_run_id) {
+      const prevRun = findById('tracking_runs', String(resume_run_id));
+      if (prevRun && prevRun.user_id === userId && prevRun.project_id === req.params.id && prevRun.goal_state) {
+        resumeState = prevRun.goal_state;
+      }
+    }
+    const userGuidance = typeof guidance === 'string' ? guidance : undefined;
+
+    const result = await runProject(req.params.id, 'manual', { resumeState, userGuidance });
 
     if (!result.success) {
       return res.status(400).json(result);

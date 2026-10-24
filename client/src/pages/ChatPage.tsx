@@ -1,10 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, ChevronDown, Copy, ThumbsUp, ThumbsDown, RefreshCw, Database, Plus, X, Check, Cpu, Globe } from 'lucide-react';
-import { chatApi, knowledgeApi, localModelApi, searchApi } from '../api';
-import type { Message, Model, KnowledgeBase, OllamaModel } from '../types';
+import { Send, ChevronDown, Copy, ThumbsUp, ThumbsDown, RefreshCw, Database, Plus, X, Check, Cpu, Globe, Paperclip, Loader2, FileText, Brain } from 'lucide-react';
+import { chatApi, knowledgeApi, localModelApi, searchApi, filesApi, memoryApi } from '../api';
+import type { Message, Model, KnowledgeBase, OllamaModel, PendingAttachment, ChatContentPart } from '../types';
 import ReactMarkdown from 'react-markdown';
 import { useLocalSettings } from '../hooks/useLocalSettings';
 import { useToast, showApiError } from '../components/Toast';
+
+/** 把可能为多模态分片的消息内容收敛为纯文本（用于保存知识库等场景） */
+function contentToPlain(content: string | ChatContentPart[]): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((p) => (p.type === 'text' ? p.text : '[图片]'))
+      .join('\n');
+  }
+  return '';
+}
 
 function ChatPage() {
   const toast = useToast();
@@ -27,6 +38,84 @@ function ChatPage() {
   const [localModels, setLocalModels] = useState<OllamaModel[]>([]);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const { settings } = useLocalSettings();
+
+  // 对话附件（图片 / 文档）
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [attaching, setAttaching] = useState(false);
+  const attachInputRef = useRef<HTMLInputElement>(null);
+  const [rememberingIdx, setRememberingIdx] = useState<number | null>(null);
+
+  const readFileAsDataURL = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error('图片读取失败'));
+      reader.readAsDataURL(file);
+    });
+
+  const handlePickAttachments = () => attachInputRef.current?.click();
+
+  const handleAttachFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    setAttaching(true);
+    try {
+      for (const file of Array.from(fileList)) {
+        const lowerName = file.name.toLowerCase();
+        const isImage = file.type.startsWith('image/');
+        const isDoc = ['.pdf', '.doc', '.docx', '.txt', '.md', '.markdown'].some((ext) =>
+          lowerName.endsWith(ext)
+        );
+        if (!isImage && !isDoc) {
+          toast.warning('暂不支持该文件类型，支持图片和 Word/PDF/TXT/Markdown 文档');
+          continue;
+        }
+        if (file.size > 20 * 1024 * 1024) {
+          toast.warning(`「${file.name}」超过 20MB，请压缩或拆分后再上传`);
+          continue;
+        }
+        if (isImage) {
+          try {
+            const dataUrl = await readFileAsDataURL(file);
+            setAttachments((prev) => [
+              ...prev,
+              { id: crypto.randomUUID(), kind: 'image', name: file.name, dataUrl, status: 'ready' },
+            ]);
+          } catch {
+            toast.error(`图片「${file.name}」读取失败`);
+          }
+        } else {
+          const id = crypto.randomUUID();
+          setAttachments((prev) => [
+            ...prev,
+            { id, kind: 'document', name: file.name, status: 'loading' },
+          ]);
+          try {
+            const extracted = await filesApi.extract(file);
+            if (!extracted.content || extracted.content.trim().length === 0) {
+              setAttachments((prev) => prev.filter((a) => a.id !== id));
+              toast.warning(`未能从「${file.name}」中读取到文字内容`);
+            } else {
+              setAttachments((prev) =>
+                prev.map((a) =>
+                  a.id === id ? { ...a, status: 'ready', text: extracted.content } : a
+                )
+              );
+            }
+          } catch (err: any) {
+            setAttachments((prev) => prev.filter((a) => a.id !== id));
+            toast.error(`文档「${file.name}」读取失败：${err.message || '请稍后重试'}`);
+          }
+        }
+      }
+    } finally {
+      setAttaching(false);
+      if (attachInputRef.current) attachInputRef.current.value = '';
+    }
+  };
+
+  const removeAttachment = (id: string) =>
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
 
   // Load models on mount
   useEffect(() => {
@@ -121,12 +210,47 @@ function ChatPage() {
     loadKnowledgeBases();
   };
 
+  // 「记住这条」：把当前这一轮问答提炼为个性化记忆
+  const handleRememberThis = async (msgIdx: number) => {
+    const msg = messages[msgIdx];
+    if (!msg || msg.role !== 'assistant') return;
+    const prevMsg = msgIdx > 0 ? messages[msgIdx - 1] : null;
+    const userText = prevMsg?.role === 'user' ? contentToPlain(prevMsg.content) : '';
+    const assistantText = contentToPlain(msg.content);
+    if (!userText.trim() || !assistantText.trim()) {
+      toast.warning('这一轮对话内容为空，没什么可记住的');
+      return;
+    }
+
+    try {
+      setRememberingIdx(msgIdx);
+      const res = await memoryApi.extractFromChat({
+        user_text: userText,
+        assistant_text: assistantText,
+      });
+      if (res.saved && res.memory) {
+        toast.success(`已记住：${res.memory.content}`);
+      } else if (res.reason === 'duplicate') {
+        toast.info('这条信息我之前已经记住啦');
+      } else if (res.reason === 'none') {
+        toast.info('这轮对话里没有值得长期记住的信息');
+      } else {
+        toast.warning('提炼记忆失败，请稍后再试');
+      }
+    } catch (err: any) {
+      console.error('Remember this failed:', err);
+      showApiError(err, toast);
+    } finally {
+      setRememberingIdx(null);
+    }
+  };
+
   const handleSaveToKnowledge = async () => {
     if (selectedMessageIdx === null) return;
     const msg = messages[selectedMessageIdx];
     const prevMsg = selectedMessageIdx > 0 ? messages[selectedMessageIdx - 1] : null;
-    const question = prevMsg?.role === 'user' ? prevMsg.content : '';
-    const answer = msg.role === 'assistant' ? msg.content : '';
+    const question = prevMsg?.role === 'user' ? contentToPlain(prevMsg.content) : '';
+    const answer = msg.role === 'assistant' ? contentToPlain(msg.content) : '';
 
     if (!selectedBaseId && !newKnowledgeBaseName.trim()) {
       toast.warning('请选择知识库或输入新知识库名称');
@@ -160,12 +284,55 @@ function ChatPage() {
   };
 
   const handleSend = async () => {
-    if (!input.trim() || isStreaming) return;
+    const readyAttachments = attachments.filter((a) => a.status === 'ready');
+    if ((!input.trim() && readyAttachments.length === 0) || isStreaming) return;
+    const pendingLoading = attachments.some((a) => a.status === 'loading');
+    if (pendingLoading) {
+      toast.warning('文档还在读取中，请稍候再发送');
+      return;
+    }
 
-    const userMessage: Message = { role: 'user', content: input.trim() };
+    const text = input.trim();
+    const imageAtts = readyAttachments.filter((a) => a.kind === 'image' && a.dataUrl);
+    const docAtts = readyAttachments.filter((a) => a.kind === 'document' && a.text);
+
+    // 展示用文本（不含 base64）
+    let displayContent = text;
+    if (docAtts.length > 0) {
+      displayContent = `${docAtts.map((d) => `【文档：${d.name}】\n${d.text}`).join('\n\n')}\n\n${text}`;
+    }
+    if (imageAtts.length > 0) {
+      displayContent = `[图片：${imageAtts.map((i) => i.name).join('、')}]\n${text}`;
+    }
+
+    // 发给大模型的内容：有图片用多模态分片，否则纯字符串
+    let llmContent: string | ChatContentPart[];
+    if (imageAtts.length > 0) {
+      const parts: ChatContentPart[] = [];
+      if (docAtts.length > 0) {
+        parts.push({
+          type: 'text',
+          text: docAtts.map((d) => `【文档：${d.name}】\n${d.text}`).join('\n\n'),
+        });
+      }
+      parts.push({ type: 'text', text: text || '请识别并分析以上图片内容。' });
+      for (const img of imageAtts) {
+        parts.push({ type: 'image_url', image_url: { url: img.dataUrl as string, detail: 'auto' } });
+      }
+      llmContent = parts;
+    } else {
+      llmContent = displayContent;
+    }
+
+    const userMessage: Message = {
+      role: 'user',
+      content: llmContent,
+      images: imageAtts.map((i) => i.dataUrl as string),
+    };
     const updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
     setInput('');
+    setAttachments([]);
     setIsStreaming(true);
 
     // Add placeholder assistant message
@@ -178,7 +345,10 @@ function ChatPage() {
       // For cloud models, create conversation first (local mode may not use DB)
       let convId = currentConversationId;
       if (!convId && !localMode) {
-        const convRes = await chatApi.createConversation(input.trim().slice(0, 30), currentModel);
+        const convRes = await chatApi.createConversation(
+          (text || (docAtts[0]?.name ?? imageAtts[0]?.name ?? '新对话')).slice(0, 30),
+          currentModel
+        );
         convId = convRes.conversation.id;
         setCurrentConversationId(convId);
         // Notify sidebar
@@ -187,10 +357,23 @@ function ChatPage() {
       }
 
       if (localMode) {
-        // Local model streaming via event source
+        // 本地模型走 Ollama，暂不支持图片识别；图片附件给出明确提示
+        if (imageAtts.length > 0) {
+          setMessages((prev) => {
+            const newMessages = [...prev];
+            newMessages[newMessages.length - 1] = {
+              role: 'assistant',
+              content: '本地模型暂不支持图片识别，请切换到支持视觉的云端模型后再发送图片。',
+            };
+            return newMessages;
+          });
+          setIsStreaming(false);
+          return;
+        }
+        // Local model streaming via event source（本地模型仅支持纯文本）
         localModelApi.streamChat({
           model: currentModel,
-          messages: updatedMessages,
+          messages: updatedMessages.map((m) => ({ role: m.role, content: contentToPlain(m.content) })),
           ollamaUrl: settings.ollamaUrl,
           onMessage: (text: string) => {
             setMessages((prev) => {
@@ -227,7 +410,7 @@ function ChatPage() {
 
         if (webSearchEnabled) {
           try {
-            const searchRes = await searchApi.webSearch(input.trim(), { count: 5 });
+            const searchRes = await searchApi.webSearch(text, { count: 5 });
             sources = (searchRes.results || []).map((r: any) => ({
               title: r.title || '',
               url: r.url || '',
@@ -288,7 +471,22 @@ function ChatPage() {
               if (line.startsWith('data: ')) {
                 try {
                   const data = JSON.parse(line.slice(6));
-                  if (data.done) {
+                  if (data.error) {
+                    // 后端流式错误（如模型不支持图片识别 MODEL_NOT_VISION）
+                    const friendly =
+                      data.error === 'MODEL_NOT_VISION'
+                        ? '当前模型不支持图片识别，请在「设置」中切换到支持视觉的多模态模型后重试。'
+                        : data.message || '模型返回错误';
+                    fullText = `❌ ${friendly}`;
+                    setMessages((prev) => {
+                      const newMessages = [...prev];
+                      newMessages[newMessages.length - 1] = {
+                        role: 'assistant',
+                        content: fullText,
+                      };
+                      return newMessages;
+                    });
+                  } else if (data.done) {
                     // Stream finished
                   } else if (data.content) {
                     fullText += data.content;
@@ -502,8 +700,8 @@ function ChatPage() {
                 >
                   {msg.role === 'assistant' ? (
                     <div className="markdown-body text-sm">
-                      {msg.content ? (
-                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      {contentToPlain(msg.content) ? (
+                        <ReactMarkdown>{contentToPlain(msg.content)}</ReactMarkdown>
                       ) : (
                         <div className="flex gap-1">
                           <span className="typing-dot w-2 h-2 bg-[var(--color-text-muted)] rounded-full"></span>
@@ -513,10 +711,26 @@ function ChatPage() {
                       )}
                     </div>
                   ) : (
-                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                    <div className="flex flex-col gap-2">
+                      {msg.images && msg.images.length > 0 && (
+                        <div className="flex flex-wrap gap-2 justify-end">
+                          {msg.images.map((src, i) => (
+                            <img
+                              key={i}
+                              src={src}
+                              alt="用户发送的图片"
+                              className="max-w-48 max-h-48 rounded-lg object-cover border border-white/20"
+                            />
+                          ))}
+                        </div>
+                      )}
+                      {contentToPlain(msg.content) && (
+                        <p className="text-sm whitespace-pre-wrap">{contentToPlain(msg.content)}</p>
+                      )}
+                    </div>
                   )}
 
-                  {msg.role === 'assistant' && msg.content && (
+                  {msg.role === 'assistant' && contentToPlain(msg.content) && (
                     <div className="flex items-center gap-2 mt-3 pt-3 border-t border-[var(--color-border)]">
                       <button className="p-1 hover:bg-[var(--color-sidebar-hover)] rounded text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors">
                         <Copy size={14} />
@@ -541,6 +755,21 @@ function ChatPage() {
                           加入知识库
                         </span>
                       </button>
+                      <button
+                        onClick={() => handleRememberThis(idx)}
+                        disabled={rememberingIdx === idx}
+                        className="p-1 hover:bg-[var(--color-sidebar-hover)] rounded text-[var(--color-text-muted)] hover:text-amber-400 transition-colors group disabled:opacity-50"
+                        title="记住这条"
+                      >
+                        {rememberingIdx === idx ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <Brain size={14} />
+                        )}
+                        <span className="absolute -top-8 left-1/2 -translate-x-1/2 bg-[var(--color-card-bg)] border border-[var(--color-border)] px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
+                          记住这条
+                        </span>
+                      </button>
                     </div>
                   )}
                 </div>
@@ -555,12 +784,49 @@ function ChatPage() {
       <div className="border-t border-[var(--color-border)] p-4">
         <div className="max-w-3xl mx-auto">
           <div className="bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-2xl focus-within:border-[var(--color-primary)] transition-colors">
+            {/* 待发送附件预览 */}
+            {attachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 px-3 pt-3">
+                {attachments.map((att) => (
+                  <div
+                    key={att.id}
+                    className="group relative flex items-center gap-2 pl-2 pr-2 py-1.5 bg-[var(--color-sidebar-hover)] border border-[var(--color-border)] rounded-lg max-w-[220px]"
+                  >
+                    {att.kind === 'image' && att.dataUrl ? (
+                      <img src={att.dataUrl} alt={att.name} className="w-8 h-8 rounded object-cover flex-shrink-0" />
+                    ) : (
+                      <FileText size={16} className="text-blue-400 flex-shrink-0" />
+                    )}
+                    <span className="text-xs text-[var(--color-text-primary)] truncate">{att.name}</span>
+                    {att.status === 'loading' ? (
+                      <Loader2 size={13} className="text-[var(--color-text-muted)] animate-spin flex-shrink-0" />
+                    ) : (
+                      <button
+                        onClick={() => removeAttachment(att.id)}
+                        className="flex-shrink-0 p-0.5 rounded text-[var(--color-text-muted)] hover:text-white transition-colors"
+                        title="移除附件"
+                      >
+                        <X size={13} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            <input
+              ref={attachInputRef}
+              type="file"
+              multiple
+              accept=".png,.jpg,.jpeg,.gif,.webp,.bmp,.pdf,.doc,.docx,.txt,.md,.markdown"
+              onChange={handleAttachFiles}
+              className="hidden"
+            />
             <textarea
               ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入消息，按 Enter 发送，Shift+Enter 换行..."
+              placeholder="输入消息，或上传图片/文档让 AI 分析…（Enter 发送，Shift+Enter 换行）"
               rows={1}
               className="w-full px-4 py-3 bg-transparent text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] resize-none outline-none text-sm"
               style={{ minHeight: '48px', maxHeight: '200px' }}
@@ -568,6 +834,15 @@ function ChatPage() {
             />
             <div className="flex items-center justify-between px-4 pb-3">
               <div className="flex items-center gap-3 text-xs text-[var(--color-text-muted)]">
+                <button
+                  onClick={handlePickAttachments}
+                  disabled={attaching || isStreaming}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[var(--color-border)] text-[var(--color-text-muted)] hover:border-[var(--color-primary)]/40 disabled:opacity-50 transition-colors"
+                  title="上传图片或 Word/PDF/TXT/Markdown 文档，让 AI 识别分析"
+                >
+                  {attaching ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
+                  <span>附件</span>
+                </button>
                 <button
                   onClick={() => setWebSearchEnabled(!webSearchEnabled)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-colors ${
@@ -581,11 +856,11 @@ function ChatPage() {
                   <span>联网搜索</span>
                   {webSearchEnabled && <Check size={13} />}
                 </button>
-                <span>当前模型：{getModelDisplayName(currentModel)}</span>
+                <span className="hidden md:inline">当前模型：{getModelDisplayName(currentModel)}</span>
               </div>
               <button
                 onClick={handleSend}
-                disabled={!input.trim() || isStreaming}
+                disabled={(!input.trim() && attachments.every((a) => a.status !== 'ready')) || isStreaming}
                 className="flex items-center gap-2 px-4 py-2 bg-[var(--color-primary)] hover:bg-[var(--color-primary-hover)] disabled:bg-[var(--color-text-muted)] disabled:cursor-not-allowed text-white rounded-lg transition-colors text-sm font-medium"
               >
                 {isStreaming ? '生成中...' : '发送'}

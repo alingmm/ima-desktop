@@ -14,6 +14,7 @@ import {
   TrackingProjectRecord,
   TrackingRunRecord,
   TrackingFrequency,
+  GoalStateSnapshot,
 } from '../storage/json-storage';
 import {
   getTaskExecutor,
@@ -23,6 +24,8 @@ import {
 } from './registry';
 import { createTrackingExecutor } from './tracking-executor';
 import { createGoalExecutor } from './goal-executor';
+import { getNextRunFromCron } from '../utils/cron';
+import { friendlyTaskError } from '../utils/errors';
 
 // 执行中的项目 id 集合（防止并发）
 const runningProjects = new Set<string>();
@@ -57,20 +60,10 @@ export function getNextRunTime(
       next.setHours(9, 0, 0, 0);
       break;
     case 'custom':
-      // 简单 cron 解析（仅支持 "分钟 小时 * * *" 形式）
+      // 标准 5 段 cron 解析（分 时 日 月 周）
       if (cronExpression) {
-        const parts = cronExpression.trim().split(/\s+/);
-        if (parts.length >= 2) {
-          const minute = parseInt(parts[0], 10);
-          const hour = parseInt(parts[1], 10);
-          if (!isNaN(minute) && !isNaN(hour)) {
-            next.setHours(hour, minute, 0, 0);
-            if (next <= from) {
-              next.setDate(next.getDate() + 1);
-            }
-            return next;
-          }
-        }
+        const cronNext = getNextRunFromCron(cronExpression, from);
+        if (cronNext) return cronNext;
       }
       // 无法解析的自定义 cron，fallback 到每小时
       next.setHours(next.getHours() + 1);
@@ -135,6 +128,7 @@ export function rescheduleProject(projectId: string) {
 export async function runProject(
   projectId: string,
   trigger: 'manual' | 'scheduled' = 'manual',
+  options?: { resumeState?: GoalStateSnapshot; userGuidance?: string },
 ): Promise<{
   success: boolean;
   error_code?: string;
@@ -142,6 +136,8 @@ export async function runProject(
   run_id?: string;
   summary?: string;
   briefing_note_id?: string;
+  paused?: boolean;
+  confirm_prompt?: string;
 }> {
   if (runningProjects.has(projectId)) {
     return {
@@ -197,12 +193,40 @@ export async function runProject(
     const result: TaskResult = await executor.execute({
       userId: project.user_id,
       project,
+      resumeState: options?.resumeState,
+      userGuidance: options?.userGuidance,
+      runId: run.id,
     });
 
     const duration = Date.now() - startTime;
 
     if (result.success) {
-      // 成功
+      if (result.paused) {
+        // 暂停：撞上限/待确认/需用户输入，存断点快照供「继续执行」
+        updateById('tracking_runs', run.id, {
+          status: 'paused',
+          summary: result.summary,
+          items_found: result.items_found,
+          duration_ms: duration,
+          process_log: result.process_log,
+          model_used: result.model_used,
+          goal_state: result.goal_state,
+          awaiting_confirm: true,
+          confirm_prompt: result.confirm_prompt,
+          trace: result.trace,
+        });
+        updateById('tracking_projects', projectId, {
+          last_run_at: new Date().toISOString(),
+        });
+        return {
+          success: true,
+          run_id: run.id,
+          summary: result.summary,
+          paused: true,
+          confirm_prompt: result.confirm_prompt,
+        };
+      }
+      // 成功完成
       updateById('tracking_runs', run.id, {
         status: 'success',
         summary: result.summary,
@@ -210,6 +234,8 @@ export async function runProject(
         items_found: result.items_found,
         duration_ms: duration,
         process_log: result.process_log,
+        model_used: result.model_used,
+        trace: result.trace,
       });
       updateById('tracking_projects', projectId, {
         last_run_at: new Date().toISOString(),
@@ -228,6 +254,9 @@ export async function runProject(
         error_message: result.error_message,
         error_code: result.error_code,
         duration_ms: duration,
+        process_log: result.process_log,
+        model_used: result.model_used,
+        trace: result.trace,
       });
 
       return {
@@ -240,9 +269,10 @@ export async function runProject(
   } catch (err: any) {
     // 系统异常
     const duration = Date.now() - startTime;
+    const friendly = friendlyTaskError(err);
     updateById('tracking_runs', run.id, {
       status: 'failed',
-      error_message: err.message || String(err),
+      error_message: friendly,
       error_code: err.error_code || 'INTERNAL_ERROR',
       duration_ms: duration,
     });
@@ -250,7 +280,7 @@ export async function runProject(
     return {
       success: false,
       error_code: err.error_code || 'INTERNAL_ERROR',
-      error_message: err.message || String(err),
+      error_message: friendly,
       run_id: run.id,
     };
   } finally {

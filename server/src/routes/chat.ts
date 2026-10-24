@@ -6,7 +6,7 @@ import {
   ConversationRecord, MessageRecord, KnowledgeBaseRecord, DocumentRecord,
   DocumentChunkRecord, selectOne,
 } from '../storage/json-storage';
-import { chatCompletion, streamChatCompletion, createEmbedding, createEmbeddingsBatch, cosineSimilarity, API_ERRORS } from '../services/ai';
+import { chatCompletion, streamChatCompletion, createEmbedding, createEmbeddingsBatch, cosineSimilarity, API_ERRORS, type ChatContentPart } from '../services/ai';
 import { recallMemories, extractMemoryFromConversation } from '../services/memory';
 import { loadConfig } from '../config';
 import { splitTextIntoChunks } from '../utils/text';
@@ -15,11 +15,22 @@ const router: import('express').Router = Router();
 
 interface Message {
   role: 'user' | 'assistant' | 'system';
-  content: string;
+  content: string | ChatContentPart[];
 }
 
 function apiError(res: any, status: number, code: string, message: string) {
   res.status(status).json({ error: code, message });
+}
+
+/** 把任意消息 content 收敛为纯文本（用于落库 / 记忆提取 / 标题） */
+function contentToText(content: string | ChatContentPart[]): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((p) => (p.type === 'text' ? p.text : '[图片]'))
+      .join('\n');
+  }
+  return '';
 }
 
 // Get available models (from config)
@@ -133,7 +144,7 @@ router.post('/stream', authMiddleware, async (req: AuthRequest, res) => {
   try {
     const lastUser = [...messages].filter((m) => m.role === 'user').pop();
     if (lastUser) {
-      const recalled = recallMemories(req.userId!, lastUser.content, 5);
+      const recalled = recallMemories(req.userId!, contentToText(lastUser.content), 5);
       if (recalled.length > 0) {
         const memText = recalled
           .map((m) => `- （${m.category}）${m.content}`)
@@ -170,7 +181,7 @@ router.post('/stream', authMiddleware, async (req: AuthRequest, res) => {
           setTimeout(() => {
             extractMemoryFromConversation(
               req.userId!,
-              lastUser.content,
+              contentToText(lastUser.content),
               content,
             ).catch(() => {});
           }, 0);
@@ -184,7 +195,7 @@ router.post('/stream', authMiddleware, async (req: AuthRequest, res) => {
                 id: uuidv4(),
                 conversation_id,
                 role: 'user',
-                content: lastUserMsg.content,
+                content: contentToText(lastUserMsg.content),
                 created_at: new Date().toISOString(),
               } as MessageRecord);
             }
@@ -243,7 +254,7 @@ router.post('/send', authMiddleware, async (req: AuthRequest, res) => {
           id: uuidv4(),
           conversation_id,
           role: 'user',
-          content: lastUserMsg.content,
+          content: contentToText(lastUserMsg.content),
           created_at: new Date().toISOString(),
         } as MessageRecord);
       }
@@ -264,6 +275,8 @@ router.post('/send', authMiddleware, async (req: AuthRequest, res) => {
     console.error('Chat error:', error.message);
     if (error.code === API_ERRORS.API_KEY_NOT_CONFIGURED) {
       res.status(400).json({ error: API_ERRORS.API_KEY_NOT_CONFIGURED, message: error.message });
+    } else if (error.code === 'MODEL_NOT_VISION') {
+      res.status(400).json({ error: 'MODEL_NOT_VISION', message: error.message });
     } else {
       res.status(500).json({ error: 'Chat failed', message: error.message });
     }

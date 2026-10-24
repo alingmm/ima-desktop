@@ -19,6 +19,10 @@ export interface TableSchemas {
   memories: MemoryRecord;
   tracking_projects: TrackingProjectRecord;
   tracking_runs: TrackingRunRecord;
+  tool_policies: ToolPolicyRecord;
+  tool_pending_approvals: ToolPendingApprovalRecord;
+  tool_execution_logs: ToolExecutionLogRecord;
+  agent_privacy_settings: AgentPrivacySettingRecord;
 }
 
 export interface UserRecord {
@@ -92,6 +96,7 @@ export interface DocumentChunkRecord {
   id: string;
   document_id: string;
   knowledge_base_id: string;
+  user_id?: string;
   chunk_index: number;
   content: string;
   embedding: number[] | null;
@@ -156,6 +161,8 @@ export interface NoteRecord {
 }
 
 export type MemoryCategory = '偏好' | '事实' | '结论' | '任务';
+// 记忆来源：auto=对话自动提炼；manual=用户手动添加；chat=对话中「记住这条」提炼
+export type MemorySource = 'auto' | 'manual' | 'chat';
 
 export interface MemoryRecord {
   id: string;
@@ -163,6 +170,7 @@ export interface MemoryRecord {
   content: string;
   category: MemoryCategory;
   tags?: string[];
+  source?: MemorySource;
   created_at: string;
   updated_at: string;
 }
@@ -170,7 +178,32 @@ export interface MemoryRecord {
 export type TrackingTaskType = 'tracking' | 'goal';
 export type TrackingFrequency = 'hourly' | 'daily' | 'weekly' | 'custom';
 export type TrackingPermission = 'SEARCH' | 'LLM' | 'WRITE' | 'NOTIFY';
-export type RunStatus = 'success' | 'failed' | 'skipped' | 'running';
+export type RunStatus = 'success' | 'failed' | 'skipped' | 'running' | 'paused';
+
+// 目标执行（goal）断点快照：撞上限/待确认时保存，供「继续执行」断点续跑
+export interface GoalStateSnapshot {
+  round: number;           // 已执行到第几轮
+  step_summary: string;    // 已执行动作与结果摘要（供模型续跑参考）
+  run_log: string[];       // 过程日志
+  final_answer: string;    // 当前已得结论
+  model_used?: string;     // 使用的模型
+  approved_actions?: string[]; // 本次执行中用户已批准的工具调用签名（批准后同签名放行）
+  trace?: AgentTraceStats; // 本次执行的感知/执行轨迹统计
+}
+
+// 自主执行轨迹统计（感知几次、执行什么、用的哪类模型）
+export interface AgentTraceStats {
+  search_count?: number;        // 联网搜索次数
+  capture_count?: number;       // 网页抓取次数
+  knowledge_search_count?: number; // 知识库检索次数
+  note_count?: number;          // 写入笔记次数
+  knowledge_write_count?: number; // 写入知识库次数
+  memory_count?: number;        // 记忆次数
+  open_app_count?: number;      // 打开应用次数
+  command_count?: number;       // 执行命令次数
+  model_source?: 'cloud' | 'local'; // 本次使用的模型来源
+  local_model?: string;         // 使用本地模型时的模型名
+}
 
 export interface TrackingProjectRecord {
   id: string;
@@ -182,6 +215,8 @@ export interface TrackingProjectRecord {
   task_type: TrackingTaskType;
   enabled: boolean;
   permissions: TrackingPermission[];
+  model?: string; // 指定使用的大模型，空则用设置页默认模型
+  max_rounds?: number; // 目标执行单次最大轮数，默认 10
   last_run_at?: string;
   next_run_at?: string;
   created_at: string;
@@ -201,6 +236,75 @@ export interface TrackingRunRecord {
   items_found?: number;
   duration_ms?: number;
   process_log?: string[];
+  model_used?: string; // 本次执行实际使用的大模型
+  goal_state?: GoalStateSnapshot; // goal 任务断点快照（供断点续跑）
+  awaiting_confirm?: boolean; // 是否暂停等待人工确认/纠偏
+  confirm_prompt?: string; // 暂停时给用户看的说明/模型想问的问题
+  trace?: AgentTraceStats; // 本次执行轨迹统计（感知/执行分类计数 + 模型来源）
+}
+
+// ========== 自主执行与隐私设置（需求10）==========
+// 每个用户一条，控制 goal 自主执行链路的联网/抓取/外部软件与模型偏好
+export interface AgentPrivacySettingRecord {
+  id: string;
+  user_id: string;
+  allow_web_search: boolean;   // 是否允许联网搜索（Tavily）
+  allow_web_capture: boolean;  // 是否允许抓取网页正文
+  allow_external_tools: boolean; // 是否允许调用外部软件（与需求9分级规则联动）
+  model_preference: 'default' | 'local'; // 执行模型偏好：跟随默认 / 强制本地模型
+  local_model?: string;        // 强制本地时使用的 Ollama 模型名（空则取配置/自动探测）
+  created_at?: string;
+  updated_at?: string;
+}
+
+// ========== 外部工具执行（需求9）==========
+export type ToolActionType = 'open_app' | 'run_command';
+export type ToolPolicyLevel = 'auto' | 'confirm' | 'deny';
+
+// 工具权限策略：每种动作类型一个总闸（用户可在设置页调整）
+export interface ToolPolicyRecord {
+  id: string;
+  user_id: string;
+  action_type: ToolActionType;
+  level: ToolPolicyLevel;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ToolApprovalStatus = 'pending' | 'approved' | 'rejected';
+
+// 待确认审批记录：需要用户确认的工具调用
+export interface ToolPendingApprovalRecord {
+  id: string;
+  user_id: string;
+  action_type: ToolActionType;
+  action_detail: string; // 脱敏后的目标/命令展示文本
+  raw_target?: string; // 原始目标（仅服务端内部使用，接口返回时必须剥离，不下发前端）
+  risk_level: 'normal' | 'high';
+  risk_reason?: string; // 高风险原因说明
+  signature: string; // 审批指纹：批准后同签名调用可放行
+  source: 'manual' | 'agent'; // 手动触发 or 自主任务发起
+  run_id?: string; // agent 来源时关联的执行记录
+  project_id?: string;
+  status: ToolApprovalStatus;
+  user_note?: string; // 用户批准/拒绝时的附言
+  created_at: string;
+  resolved_at?: string;
+}
+
+// 工具执行日志（只读审计，敏感值已脱敏）
+export interface ToolExecutionLogRecord {
+  id: string;
+  user_id: string;
+  action_type: ToolActionType;
+  action_detail: string; // 脱敏
+  level: ToolPolicyLevel; // 本次执行时的分级结果
+  risk_level: 'normal' | 'high';
+  ok: boolean;
+  result_summary: string; // 脱敏 + 截断的结果概要
+  source: 'manual' | 'agent';
+  duration_ms?: number;
+  created_at: string;
 }
 
 // ========== JSON File Storage ==========

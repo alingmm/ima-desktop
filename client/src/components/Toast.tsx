@@ -44,6 +44,23 @@ const ERROR_CODE_MESSAGES: Record<string, { message: string; action?: Toast['act
     message: '视频服务未配置，请在设置中开启',
     action: { label: '去设置', onClick: () => window.dispatchEvent(new CustomEvent('navigate', { detail: 'settings' })) },
   },
+  MISSING_API_KEY: {
+    message: '还没设置大模型，先去「设置」填一下 API Key 和模型吧',
+    action: { label: '去设置', onClick: () => window.dispatchEvent(new CustomEvent('navigate', { detail: 'settings' })) },
+  },
+  INVALID_URL: {
+    message: '链接格式不对，请粘贴完整的网址（如 https://example.com/...）',
+  },
+  EXTRACTION_FAILED: {
+    message: '没抓到有效内容，可能是网页需要登录或不支持抓取',
+  },
+  VIDEO_TRANSCRIPT_UNAVAILABLE: {
+    message: '这个视频暂时拿不到字幕，只能保存简介等基本信息',
+  },
+  TOOL_DISABLED: {
+    message: '这个外部调用已被你在设置里禁用，如需使用请先到「设置 - 外部调用」开启',
+    action: { label: '去设置', onClick: () => window.dispatchEvent(new CustomEvent('navigate', { detail: 'settings' })) },
+  },
 };
 
 export function showApiError(error: any, toast: ToastContextValue): string | null {

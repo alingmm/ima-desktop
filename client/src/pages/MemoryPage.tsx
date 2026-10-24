@@ -4,6 +4,7 @@ import {
   Plus,
   Search,
   Trash2,
+  Pencil,
   Clock,
   Heart,
   FileText,
@@ -11,20 +12,32 @@ import {
   ListChecks,
   Loader2,
   X,
+  Sparkles,
+  MessageSquarePlus,
 } from 'lucide-react';
 import { memoryApi } from '../api';
 import { useToast, showApiError } from '../components/Toast';
+import { formatDateTime } from '../utils/format';
 
 type MemoryCategory = '偏好' | '事实' | '结论' | '任务';
+type MemorySource = 'auto' | 'manual' | 'chat';
 
 interface Memory {
   id: string;
   content: string;
   category: MemoryCategory;
   tags?: string[];
+  source?: MemorySource;
   created_at: string;
   updated_at?: string;
 }
+
+// 来源标签：让用户清楚知道这条记忆是怎么来的
+const SOURCE_CONFIG: Record<MemorySource, { label: string; icon: typeof Sparkles; color: string }> = {
+  auto: { label: 'AI 自动记住', icon: Sparkles, color: 'text-amber-400' },
+  chat: { label: '对话中记住', icon: MessageSquarePlus, color: 'text-blue-400' },
+  manual: { label: '手动添加', icon: Pencil, color: 'text-gray-400' },
+};
 
 const CATEGORY_CONFIG: {
   key: MemoryCategory;
@@ -40,14 +53,7 @@ const CATEGORY_CONFIG: {
 ];
 
 function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return formatDateTime(iso);
 }
 
 export default function MemoryPage() {
@@ -58,6 +64,9 @@ export default function MemoryPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [newContent, setNewContent] = useState('');
   const [newCategory, setNewCategory] = useState<MemoryCategory>('事实');
+  const [editingMemory, setEditingMemory] = useState<Memory | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [editCategory, setEditCategory] = useState<MemoryCategory>('事实');
   const [submitting, setSubmitting] = useState(false);
   const [filterCategory, setFilterCategory] = useState<MemoryCategory | 'all'>('all');
 
@@ -110,6 +119,35 @@ export default function MemoryPage() {
       toast.success('已删除');
     } catch (e) {
       showApiError(e, toast);
+    }
+  };
+
+  const openEdit = (mem: Memory) => {
+    setEditingMemory(mem);
+    setEditContent(mem.content);
+    setEditCategory(mem.category);
+  };
+
+  const handleUpdate = async () => {
+    if (!editingMemory) return;
+    if (!editContent.trim()) {
+      toast.warning('请输入记忆内容');
+      return;
+    }
+    try {
+      setSubmitting(true);
+      const res = await memoryApi.updateMemory(editingMemory.id, {
+        content: editContent.trim(),
+        category: editCategory,
+        tags: [editCategory],
+      });
+      setMemories((prev) => prev.map((m) => (m.id === editingMemory.id ? res.memory : m)));
+      setEditingMemory(null);
+      toast.success('记忆已更新');
+    } catch (e) {
+      showApiError(e, toast);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -214,20 +252,41 @@ export default function MemoryPage() {
                       <Icon size={11} />
                       {catConfig.label}
                     </span>
-                    <button
-                      onClick={() => handleDelete(mem)}
-                      title="删除"
-                      className="p-1.5 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/10 text-[var(--color-text-muted)] hover:text-red-400 transition-all"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-all">
+                      <button
+                        onClick={() => openEdit(mem)}
+                        title="编辑"
+                        className="p-1.5 rounded hover:bg-blue-500/10 text-[var(--color-text-muted)] hover:text-blue-400 transition-colors"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(mem)}
+                        title="删除"
+                        className="p-1.5 rounded hover:bg-red-500/10 text-[var(--color-text-muted)] hover:text-red-400 transition-colors"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   </div>
                   <p className="text-sm text-[var(--color-text-primary)] leading-relaxed">
                     {mem.content}
                   </p>
-                  <div className="flex items-center gap-1.5 mt-3 text-xs text-[var(--color-text-muted)]">
-                    <Clock size={12} />
-                    {formatTime(mem.created_at)}
+                  <div className="flex items-center justify-between mt-3 text-xs text-[var(--color-text-muted)]">
+                    <span className="flex items-center gap-1.5">
+                      <Clock size={12} />
+                      {formatTime(mem.created_at)}
+                    </span>
+                    {mem.source && SOURCE_CONFIG[mem.source] && (() => {
+                      const src = SOURCE_CONFIG[mem.source!];
+                      const SrcIcon = src.icon;
+                      return (
+                        <span className={`flex items-center gap-1 ${src.color}`}>
+                          <SrcIcon size={11} />
+                          {src.label}
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
               );
@@ -303,6 +362,78 @@ export default function MemoryPage() {
               >
                 {submitting && <Loader2 size={14} className="animate-spin" />}
                 保存记忆
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 编辑记忆弹窗 */}
+      {editingMemory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-[var(--color-card-bg)] rounded-xl w-full max-w-md mx-4 border border-[var(--color-border)] shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--color-border)]">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <Pencil size={18} className="text-blue-400" />
+                编辑记忆
+              </h2>
+              <button
+                onClick={() => setEditingMemory(null)}
+                className="p-1.5 rounded hover:bg-white/10 text-[var(--color-text-muted)] hover:text-white"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">记忆内容</label>
+                <textarea
+                  value={editContent}
+                  onChange={(e) => setEditContent(e.target.value)}
+                  rows={4}
+                  className="w-full px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-white placeholder-[var(--color-text-muted)] focus:outline-none focus:border-blue-500 resize-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">分类</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {CATEGORY_CONFIG.map((cat) => {
+                    const Icon = cat.icon;
+                    return (
+                      <button
+                        key={cat.key}
+                        onClick={() => setEditCategory(cat.key)}
+                        className={`p-2.5 rounded-lg border flex flex-col items-center gap-1 transition-colors ${
+                          editCategory === cat.key
+                            ? 'border-blue-500 bg-blue-500/10'
+                            : 'border-[var(--color-border)] hover:border-[var(--color-text-muted)]'
+                        }`}
+                      >
+                        <Icon size={16} className={cat.color} />
+                        <span className="text-xs">{cat.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 px-5 py-4 border-t border-[var(--color-border)]">
+              <button
+                onClick={() => setEditingMemory(null)}
+                className="px-4 py-2 text-sm text-[var(--color-text-secondary)] hover:text-white transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleUpdate}
+                disabled={submitting}
+                className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg text-sm font-medium flex items-center gap-2 hover:opacity-90 disabled:opacity-50"
+              >
+                {submitting && <Loader2 size={14} className="animate-spin" />}
+                保存修改
               </button>
             </div>
           </div>

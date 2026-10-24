@@ -15,10 +15,141 @@ import {
   BookmarkPlus,
   BookOpen,
   Loader,
+  FileUp,
+  Link2,
+  Wand2,
+  Film,
+  Globe,
 } from 'lucide-react';
-import { notesApi, knowledgeApi } from '../api';
+import { notesApi, knowledgeApi, filesApi, captureApi } from '../api';
+import type { CaptureData, VideoCaptureData, WebCaptureData } from '../api';
 import { useToast, showApiError } from '../components/Toast';
+import { formatRelative, formatDateTime } from '../utils/format';
 import type { Note } from '../types';
+
+// 网页抓取结果预览
+function WebPreview({ result }: { result: WebCaptureData }) {
+  const [expanded, setExpanded] = useState(false);
+  const text = result.content || '';
+  const preview = expanded ? text : text.slice(0, 1200);
+  return (
+    <div>
+      <div className="p-4 bg-[#0f1419] border border-[#30363d] rounded-xl">
+        <div className="flex items-start gap-2 mb-2">
+          <Globe size={16} className="text-blue-400 mt-0.5 shrink-0" />
+          <h4 className="text-sm font-medium text-white leading-snug">{result.title}</h4>
+        </div>
+        <a
+          href={result.url}
+          target="_blank"
+          rel="noreferrer"
+          className="block text-xs text-blue-400 hover:underline mb-3 break-all"
+        >
+          {result.url}
+        </a>
+        {text ? (
+          <>
+            <p className="text-sm text-[#c9d1d9] whitespace-pre-wrap leading-relaxed">
+              {preview}
+              {!expanded && text.length > 1200 ? '…' : ''}
+            </p>
+            {text.length > 1200 && (
+              <button
+                onClick={() => setExpanded(!expanded)}
+                className="mt-2 text-xs text-blue-400 hover:underline"
+              >
+                {expanded ? '收起' : `展开全部（约 ${text.length} 字）`}
+              </button>
+            )}
+          </>
+        ) : (
+          <p className="text-sm text-[#f85149]">
+            没能提取到正文（可能是需要登录、反爬限制或页面内容特殊），可以试试「大模型一键整理」或换一个链接。
+          </p>
+        )}
+      </div>
+      <p className="text-xs text-[#6e7681] mt-2">
+        保存时会自动保留标题、链接与来源；内容较长可先点「大模型一键整理」成结构化摘要。
+      </p>
+    </div>
+  );
+}
+
+// 视频抓取结果预览
+function VideoPreview({
+  result,
+  formatDuration,
+}: {
+  result: VideoCaptureData;
+  formatDuration: (sec?: number) => string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const desc = result.description || '';
+  const preview = expanded ? desc : desc.slice(0, 600);
+  const duration = formatDuration(result.duration_seconds);
+  return (
+    <div>
+      <div className="p-4 bg-[#0f1419] border border-[#30363d] rounded-xl">
+        <div className="flex gap-4">
+          {result.thumbnail && (
+            <img
+              src={result.thumbnail}
+              alt="封面"
+              referrerPolicy="no-referrer"
+              className="w-40 aspect-video object-cover rounded-lg border border-[#30363d] shrink-0 bg-black"
+            />
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-1.5">
+              <Film size={15} className="text-purple-400 shrink-0" />
+              {result.platform !== 'unknown' && (
+                <span className="text-[11px] px-1.5 py-0.5 rounded bg-purple-500/15 text-purple-300 border border-purple-500/30">
+                  {result.platform}
+                </span>
+              )}
+              {duration && <span className="text-xs text-[#8b949e]">时长 {duration}</span>}
+            </div>
+            <h4 className="text-sm font-medium text-white leading-snug mb-1">{result.title}</h4>
+            {result.author && <p className="text-xs text-[#8b949e] mb-1">作者：{result.author}</p>}
+            <a
+              href={result.url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-blue-400 hover:underline break-all"
+            >
+              {result.url}
+            </a>
+          </div>
+        </div>
+
+        {desc ? (
+          <div className="mt-3">
+            <p className="text-xs text-[#8b949e] mb-1">简介：</p>
+            <p className="text-sm text-[#c9d1d9] whitespace-pre-wrap leading-relaxed">
+              {preview}
+              {!expanded && desc.length > 600 ? '…' : ''}
+            </p>
+            {desc.length > 600 && (
+              <button
+                onClick={() => setExpanded(!expanded)}
+                className="mt-1 text-xs text-blue-400 hover:underline"
+              >
+                {expanded ? '收起' : '展开全部'}
+              </button>
+            )}
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-[#6e7681]">
+            该平台未公开视频简介，只能保存标题、作者等基本信息。
+          </p>
+        )}
+      </div>
+      <p className="text-xs text-[#6e7681] mt-2">
+        视频字幕/正文多数平台不开放，这里只抓取公开元信息与简介，不会编造内容；有简介时可点「大模型一键整理」生成摘要。
+      </p>
+    </div>
+  );
+}
 
 export default function NotesPage() {
   const toast = useToast();
@@ -40,6 +171,44 @@ export default function NotesPage() {
   const [selectedKbImport, setSelectedKbImport] = useState<string | null>(null);
   const [isImportingKb, setIsImportingKb] = useState(false);
   const [loadingKbList, setLoadingKbList] = useState(false);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
+  const uploadDocInputRef = React.useRef<HTMLInputElement>(null);
+
+  // 抓取链接
+  const [showCaptureModal, setShowCaptureModal] = useState(false);
+  const [captureUrl, setCaptureUrl] = useState('');
+  const [captureLoading, setCaptureLoading] = useState(false);
+  const [captureResult, setCaptureResult] = useState<CaptureData | null>(null);
+  const [organizing, setOrganizing] = useState(false);
+  const [savingCapture, setSavingCapture] = useState(false);
+
+  const handlePickUploadDoc = () => uploadDocInputRef.current?.click();
+
+  const handleUploadDoc = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    setUploadingDoc(true);
+    let successCount = 0;
+    try {
+      for (const file of Array.from(fileList)) {
+        try {
+          const { note } = await filesApi.toNote(file);
+          setNotes((prev) => [note, ...prev]);
+          successCount += 1;
+        } catch (err: any) {
+          toast.error(`「${file.name}」导入失败：${err?.message || '请稍后重试'}`);
+        }
+      }
+      if (successCount > 0) {
+        toast.success(`成功导入 ${successCount} 个文档为笔记`);
+        loadNotes();
+        loadTags();
+      }
+    } finally {
+      setUploadingDoc(false);
+      if (uploadDocInputRef.current) uploadDocInputRef.current.value = '';
+    }
+  };
 
   const loadNotes = useCallback(async () => {
     try {
@@ -186,24 +355,227 @@ export default function NotesPage() {
     }
   };
 
-  const formatDate = (dateStr: string) => {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    const minutes = Math.floor(diff / 60000);
-    const hours = Math.floor(diff / 3600000);
-    const days = Math.floor(diff / 86400000);
-
-    if (minutes < 1) return '刚刚';
-    if (minutes < 60) return `${minutes}分钟前`;
-    if (hours < 24) return `${hours}小时前`;
-    if (days < 7) return `${days}天前`;
-    return date.toLocaleDateString('zh-CN');
-  };
+  const formatDate = (dateStr: string) => formatRelative(dateStr);
 
   const pinnedNotes = notes.filter(n => n.is_pinned);
   const unpinnedNotes = notes.filter(n => !n.is_pinned);
   const sortedNotes = [...pinnedNotes, ...unpinnedNotes];
+
+  // ===== 抓取链接：网页 / 视频 =====
+  const openCaptureModal = () => {
+    setShowCaptureModal(true);
+    setCaptureUrl('');
+    setCaptureResult(null);
+  };
+
+  const closeCaptureModal = () => {
+    if (captureLoading || organizing || savingCapture) return;
+    setShowCaptureModal(false);
+    setCaptureUrl('');
+    setCaptureResult(null);
+  };
+
+  const isVideoResult = (r: CaptureData | null): r is VideoCaptureData =>
+    !!r && (r as VideoCaptureData).platform !== undefined;
+
+  const handleCapture = async () => {
+    const url = captureUrl.trim();
+    if (!url) {
+      toast.warning('请先粘贴要抓取的链接');
+      return;
+    }
+    if (!/^https?:\/\//i.test(url) && !/^[\w-]+(\.[\w-]+)+/.test(url)) {
+      toast.warning('链接格式不对，请粘贴完整的网址');
+      return;
+    }
+    setCaptureLoading(true);
+    setCaptureResult(null);
+    try {
+      const result = await captureApi.fetch(url);
+      setCaptureResult(result);
+      if (isVideoResult(result)) {
+        toast.success(`已获取视频信息：${result.title.slice(0, 20)}`);
+      } else {
+        toast.success('网页内容抓取成功，可以预览后保存');
+      }
+    } catch (e: any) {
+      toast.error(e?.message || '抓取失败，请稍后重试');
+    } finally {
+      setCaptureLoading(false);
+    }
+  };
+
+  const handleOrganize = async () => {
+    if (!captureResult) return;
+    const video = isVideoResult(captureResult);
+    // 视频用简介作为整理素材；网页用正文
+    const rawContent = video
+      ? (captureResult as VideoCaptureData).description || ''
+      : (captureResult as WebCaptureData).content;
+    if (!rawContent.trim()) {
+      toast.warning(video ? '没有抓到视频简介，暂时无法整理' : '没有可整理的正文');
+      return;
+    }
+    setOrganizing(true);
+    try {
+      const organized = await captureApi.organize({
+        kind: video ? 'video' : 'web',
+        title: captureResult.title,
+        content: rawContent,
+        url: captureResult.url,
+      });
+      setCaptureResult({
+        ...(captureResult as any),
+        content: organized.content,
+        _organized: true,
+      });
+      toast.success('整理完成，可预览后存为笔记');
+    } catch (e: any) {
+      toast.error(e?.message || '大模型整理失败，请稍后重试');
+    } finally {
+      setOrganizing(false);
+    }
+  };
+
+  const handleSaveCapture = async () => {
+    if (!captureResult) return;
+    const video = isVideoResult(captureResult);
+    const content = (captureResult as any).content || '';
+    if (!content.trim()) {
+      toast.warning('没有可保存的内容');
+      return;
+    }
+    setSavingCapture(true);
+    try {
+      const { note } = await captureApi.toNote({
+        kind: video ? 'video' : 'web',
+        title: captureResult.title,
+        content,
+        url: captureResult.url,
+        author: video ? (captureResult as VideoCaptureData).author : undefined,
+        organized: !!(captureResult as any)._organized,
+      });
+      toast.success('已保存为笔记');
+      setShowCaptureModal(false);
+      setCaptureResult(null);
+      setCaptureUrl('');
+      setNotes((prev) => [note, ...prev]);
+      loadNotes();
+      loadTags();
+    } catch (e: any) {
+      toast.error(e?.message || '保存失败，请稍后重试');
+    } finally {
+      setSavingCapture(false);
+    }
+  };
+
+  const formatDuration = (sec?: number): string => {
+    if (!sec || sec <= 0) return '';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  };
+
+  // 抓取链接弹窗（提取为变量，详情/列表视图下都渲染）
+  const captureModal = showCaptureModal ? (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-2xl bg-[#1c2128] border border-[#30363d] rounded-2xl shadow-2xl flex flex-col max-h-[85vh]">
+        <div className="flex items-center justify-between p-5 border-b border-[#30363d]">
+          <h3 className="text-base font-medium text-white flex items-center gap-2">
+            <Link2 size={18} className="text-blue-400" />
+            抓取网页 / 视频链接
+          </h3>
+          <button
+            onClick={closeCaptureModal}
+            disabled={captureLoading || organizing || savingCapture}
+            className="p-2 hover:bg-[#21262d] rounded-lg transition-colors disabled:opacity-40"
+          >
+            <X size={18} className="text-[#8b949e]" />
+          </button>
+        </div>
+
+        <div className="p-5 overflow-y-auto flex-1">
+          {/* URL 输入 */}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={captureUrl}
+              onChange={(e) => setCaptureUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !captureLoading && !captureResult) handleCapture();
+              }}
+              placeholder="粘贴网页或视频链接，如 https://example.com/article 或 B站/YouTube 视频链接"
+              disabled={captureLoading}
+              className="flex-1 px-3 py-2.5 bg-[#0f1419] border border-[#30363d] rounded-lg text-sm text-white placeholder-[#6e7681] focus:outline-none focus:border-blue-500"
+            />
+            <button
+              onClick={handleCapture}
+              disabled={captureLoading || !captureUrl.trim()}
+              className="px-4 py-2.5 bg-gradient-to-r from-blue-500 to-purple-600 hover:opacity-90 disabled:opacity-50 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-opacity"
+            >
+              {captureLoading ? <Loader size={16} className="animate-spin" /> : <Globe size={16} />}
+              {captureResult && !captureLoading ? '重新抓取' : '开始抓取'}
+            </button>
+          </div>
+          <p className="text-xs text-[#6e7681] mt-2">
+            支持普通文章网页，以及哔哩哔哩、YouTube、抖音、快手、微博等常见视频平台；视频可获取标题、作者、简介、封面等公开信息。
+          </p>
+
+          {/* 抓取进度 */}
+          {captureLoading && (
+            <div className="mt-6 py-10 flex flex-col items-center justify-center gap-3 text-[#8b949e] text-sm">
+              <Loader size={28} className="animate-spin text-blue-400" />
+              <span>正在抓取并整理内容，请稍候…</span>
+            </div>
+          )}
+
+          {/* 抓取结果预览 */}
+          {!captureLoading && captureResult && (
+            <div className="mt-5">
+              {isVideoResult(captureResult) ? (
+                <VideoPreview result={captureResult} formatDuration={formatDuration} />
+              ) : (
+                <WebPreview result={captureResult as WebCaptureData} />
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 底部操作 */}
+        {captureResult && !captureLoading && (
+          <div className="flex items-center justify-between gap-3 p-4 border-t border-[#30363d]">
+            <button
+              onClick={handleOrganize}
+              disabled={organizing || savingCapture}
+              className="flex items-center gap-2 px-4 py-2.5 border border-purple-500/40 text-purple-300 hover:bg-purple-500/10 rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {organizing ? <Loader size={16} className="animate-spin" /> : <Wand2 size={16} />}
+              {(captureResult as any)._organized ? '再次整理' : '大模型一键整理'}
+            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={closeCaptureModal}
+                disabled={savingCapture || organizing}
+                className="px-4 py-2.5 bg-[#21262d] hover:bg-[#30363d] text-white rounded-lg transition-colors text-sm disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveCapture}
+                disabled={savingCapture || organizing}
+                className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-blue-500 to-purple-600 hover:opacity-90 disabled:opacity-50 text-white rounded-lg transition-opacity text-sm font-medium"
+              >
+                {savingCapture ? <Loader size={16} className="animate-spin" /> : <Save size={16} />}
+                存为笔记
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  ) : null;
 
   // 导入知识库弹窗（提取为变量，保证详情视图/列表视图下都能正常渲染，不受条件渲染影响）
   const importKbModal = showImportKbModal ? (
@@ -446,7 +818,7 @@ export default function NotesPage() {
             <div className="mt-8 pt-4 border-t border-[#30363d] flex items-center gap-4 text-sm text-[#6e7681]">
               <span className="flex items-center gap-1.5">
                 <Clock size={14} />
-                创建于 {new Date(selectedNote.created_at).toLocaleString('zh-CN')}
+                创建于 {formatDateTime(selectedNote.created_at)}
               </span>
               <span className="flex items-center gap-1.5">
                 <Clock size={14} />
@@ -456,6 +828,7 @@ export default function NotesPage() {
           </div>
         </div>
         {importKbModal}
+        {captureModal}
       </div>
     );
   }
@@ -496,14 +869,41 @@ export default function NotesPage() {
               <List size={18} />
             </button>
           </div>
-          {/* 新建按钮 */}
-          <button
-            onClick={createNote}
-            className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-opacity flex items-center gap-2"
-          >
-            <Plus size={18} />
-            新建笔记
-          </button>
+          {/* 操作按钮 */}
+          <div className="flex items-center gap-2">
+            <input
+              ref={uploadDocInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.doc,.docx,.txt,.md,.markdown"
+              onChange={handleUploadDoc}
+              className="hidden"
+            />
+            <button
+              onClick={openCaptureModal}
+              title="粘贴网页或视频链接，自动抓取内容并存为笔记"
+              className="px-3 py-2 border border-[#30363d] text-[#c9d1d9] rounded-lg text-sm font-medium hover:bg-[#21262d] transition-colors flex items-center gap-2"
+            >
+              <Link2 size={18} />
+              <span className="hidden sm:inline">抓取链接</span>
+            </button>
+            <button
+              onClick={handlePickUploadDoc}
+              disabled={uploadingDoc}
+              title="上传 Word / PDF / TXT / Markdown 文档，自动识别文字并保存为笔记"
+              className="px-3 py-2 border border-[#30363d] text-[#c9d1d9] rounded-lg text-sm font-medium hover:bg-[#21262d] disabled:opacity-50 transition-colors flex items-center gap-2"
+            >
+              {uploadingDoc ? <Loader size={18} className="animate-spin" /> : <FileUp size={18} />}
+              <span className="hidden sm:inline">{uploadingDoc ? '导入中…' : '上传文档'}</span>
+            </button>
+            <button
+              onClick={createNote}
+              className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg text-sm font-medium hover:opacity-90 transition-opacity flex items-center gap-2"
+            >
+              <Plus size={18} />
+              新建笔记
+            </button>
+          </div>
         </div>
       </div>
 
@@ -648,6 +1048,7 @@ export default function NotesPage() {
         </div>
       </div>
       {importKbModal}
+      {captureModal}
     </div>
   );
 }

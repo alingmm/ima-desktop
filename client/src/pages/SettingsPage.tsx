@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Settings, User, Palette, Bell, Shield, HelpCircle, ChevronRight, Save, Cpu, RefreshCw, Download, CheckCircle, AlertCircle, Loader2, Key, Globe, Eye, EyeOff } from 'lucide-react';
-import { localModelApi, settingsApi } from '../api';
+import { Settings, User, Palette, Bell, Shield, HelpCircle, ChevronRight, Save, Cpu, RefreshCw, Download, CheckCircle, AlertCircle, Loader2, Key, Globe, Eye, EyeOff, Terminal, AppWindow, ScrollText, Play, Bot } from 'lucide-react';
+import { localModelApi, settingsApi, toolsApi, agentApi } from '../api';
 import type { OllamaModel } from '../types';
+import type { ToolActionType, ToolPolicyLevel, ToolExecutionLogItem, AgentPrivacySettings } from '../api';
 import { useLocalSettings } from '../hooks/useLocalSettings';
 import { useToast } from '../components/Toast';
 
-type SettingsSection = 'profile' | 'appearance' | 'models' | 'notifications' | 'security' | 'about';
+type SettingsSection = 'profile' | 'appearance' | 'models' | 'notifications' | 'tools' | 'agent' | 'security' | 'about';
 
 // OpenAI 兼容服务预设
 interface ServicePreset {
@@ -36,6 +37,8 @@ function SettingsPage() {
     { id: 'appearance' as SettingsSection, label: '外观设置', icon: Palette },
     { id: 'models' as SettingsSection, label: '模型偏好', icon: Settings },
     { id: 'notifications' as SettingsSection, label: '通知设置', icon: Bell },
+    { id: 'tools' as SettingsSection, label: '外部调用', icon: Terminal },
+    { id: 'agent' as SettingsSection, label: '自主执行与隐私', icon: Bot },
     { id: 'security' as SettingsSection, label: '账号安全', icon: Shield },
     { id: 'about' as SettingsSection, label: '关于', icon: HelpCircle },
   ];
@@ -213,6 +216,12 @@ function SettingsPage() {
           </div>
         );
 
+      case 'tools':
+        return <ExternalToolsSettings />;
+
+      case 'agent':
+        return <AgentPrivacySettings />;
+
       case 'about':
         return (
           <div className="space-y-6">
@@ -225,7 +234,7 @@ function SettingsPage() {
                   </svg>
                 </div>
                 <h3 className="text-lg font-semibold text-white mb-1">AI 工作台</h3>
-                <p className="text-sm text-[var(--color-text-muted)]">版本 1.0.0</p>
+                <p className="text-sm text-[var(--color-text-muted)]">版本 1.4.0</p>
               </div>
               <div className="space-y-3">
                 <button className="w-full flex items-center justify-between p-4 bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-xl hover:border-[var(--color-primary)] transition-colors">
@@ -320,6 +329,7 @@ function ModelSettings() {
   const [available, setAvailable] = useState<boolean | null>(null);
   const [checkError, setCheckError] = useState('');
   const [pulling, setPulling] = useState(false);
+  const [pullError, setPullError] = useState('');
   const [pullModelName, setPullModelName] = useState('');
   const [streamOutput, setStreamOutput] = useState(true);
 
@@ -436,12 +446,14 @@ function ModelSettings() {
   const pullModel = async () => {
     if (!pullModelName.trim()) return;
     setPulling(true);
+    setPullError('');
     try {
       await localModelApi.pullModel(pullModelName.trim(), ollamaUrlInput);
       setPullModelName('');
+      toastSuccess('模型下载任务已开始，请稍候在本地模型列表查看');
       loadModels();
     } catch (e: any) {
-      alert('拉取失败: ' + (e.message || e));
+      setPullError(e?.message || '下载失败，请确认 Ollama 已启动后重试');
     } finally {
       setPulling(false);
     }
@@ -808,6 +820,9 @@ function ModelSettings() {
             <p className="text-xs text-[var(--color-text-muted)]">
               从 Ollama 模型库下载，查看：<a href="https://ollama.com/library" target="_blank" rel="noreferrer" className="underline">ollama.com/library</a>
             </p>
+            {pullError && (
+              <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{pullError}</p>
+            )}
           </div>
         )}
       </div>
@@ -816,3 +831,462 @@ function ModelSettings() {
 }
 
 export default SettingsPage;
+
+// ========== 外部调用设置（权限分级 + 手动测试 + 执行日志） ==========
+const POLICY_LEVEL_LABELS: Record<ToolPolicyLevel, string> = {
+  auto: '自动执行',
+  confirm: '每次确认',
+  deny: '禁用',
+};
+
+const ACTION_TYPE_META: { type: ToolActionType; label: string; desc: string; icon: typeof Terminal }[] = [
+  {
+    type: 'open_app',
+    label: '打开应用 / 链接',
+    desc: 'AI 执行任务时可以打开电脑上的应用、文件或网址',
+    icon: AppWindow,
+  },
+  {
+    type: 'run_command',
+    label: '执行系统命令',
+    desc: 'AI 执行任务时可以在电脑上运行命令（如查看目录、读取系统信息）',
+    icon: Terminal,
+  },
+];
+
+function ExternalToolsSettings() {
+  const { success: toastSuccess, error: toastError } = useToast();
+  const [policies, setPolicies] = useState<Record<ToolActionType, ToolPolicyLevel>>({
+    open_app: 'auto',
+    run_command: 'confirm',
+  });
+  const [loading, setLoading] = useState(true);
+  const [logs, setLogs] = useState<ToolExecutionLogItem[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [testType, setTestType] = useState<ToolActionType>('run_command');
+  const [testTarget, setTestTarget] = useState('');
+  const [testRunning, setTestRunning] = useState(false);
+  const [testOutput, setTestOutput] = useState('');
+
+  const loadLogs = async () => {
+    setLogsLoading(true);
+    try {
+      const res = await toolsApi.getLogs(50);
+      setLogs(res.logs || []);
+    } catch {
+      // 静默
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await toolsApi.getPolicy();
+        setPolicies(res);
+      } catch (e: any) {
+        toastError(e?.message || '加载权限设置失败');
+      } finally {
+        setLoading(false);
+      }
+      loadLogs();
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleChangeLevel = async (type: ToolActionType, level: ToolPolicyLevel) => {
+    const prev = policies[type];
+    setPolicies((p) => ({ ...p, [type]: level }));
+    try {
+      await toolsApi.savePolicy({ [type]: level });
+      toastSuccess('权限设置已保存');
+    } catch (e: any) {
+      setPolicies((p) => ({ ...p, [type]: prev }));
+      toastError(e?.message || '保存失败，请重试');
+    }
+  };
+
+  const handleTest = async () => {
+    const target = testTarget.trim();
+    if (!target || testRunning) return;
+    setTestRunning(true);
+    setTestOutput('');
+    try {
+      const res = await toolsApi.run(testType, target);
+      if (res.status === 'pending') {
+        toastSuccess('该操作需要确认，请在弹出的确认窗口中处理');
+        setTestOutput('（已提交，等待你在确认弹窗中批准/拒绝）');
+      } else {
+        setTestOutput(res.output || (res.ok ? '（执行完成，无输出）' : '（执行失败）'));
+      }
+      loadLogs();
+    } catch (e: any) {
+      toastError(e?.message || '执行失败');
+      setTestOutput(`执行失败：${e?.message || '未知错误'}`);
+    } finally {
+      setTestRunning(false);
+    }
+  };
+
+  const formatTime = (iso?: string) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold text-white">外部调用</h2>
+        <p className="text-[var(--color-text-secondary)] text-sm mt-1">
+          管理 AI 在自主执行任务时调用电脑能力的权限。高风险操作（删除、改系统设置等）无论如何设置都会先经你确认。
+        </p>
+      </div>
+
+      {/* 权限分级 */}
+      <div className="space-y-3">
+        {ACTION_TYPE_META.map(({ type, label, desc, icon: Icon }) => (
+          <div
+            key={type}
+            className="flex items-center gap-4 p-4 bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-xl"
+          >
+            <div className="w-10 h-10 rounded-lg bg-[var(--color-hover-bg)] flex items-center justify-center flex-shrink-0">
+              <Icon size={18} className="text-[var(--color-text-secondary)]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white">{label}</p>
+              <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">{desc}</p>
+            </div>
+            <select
+              value={policies[type]}
+              disabled={loading}
+              onChange={(e) => handleChangeLevel(type, e.target.value as ToolPolicyLevel)}
+              className="px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] disabled:opacity-50"
+            >
+              {(Object.keys(POLICY_LEVEL_LABELS) as ToolPolicyLevel[]).map((lv) => (
+                <option key={lv} value={lv}>
+                  {POLICY_LEVEL_LABELS[lv]}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+        <div className="flex items-start gap-2 px-1">
+          <Shield size={14} className="text-[var(--color-text-secondary)] flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+            说明：打开网址链接默认安全；涉及删除文件、修改系统、结束进程等高风险命令，系统会强制弹出确认窗口并给出红色风险提示，无法被设置为自动执行。
+          </p>
+        </div>
+      </div>
+
+      {/* 手动测试 */}
+      <div className="p-4 bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-xl space-y-3">
+        <h3 className="text-sm font-medium text-white flex items-center gap-2">
+          <Play size={15} className="text-[var(--color-text-secondary)]" />
+          试一下
+        </h3>
+        <div className="flex gap-2">
+          <select
+            value={testType}
+            onChange={(e) => setTestType(e.target.value as ToolActionType)}
+            className="px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)]"
+          >
+            <option value="run_command">执行命令</option>
+            <option value="open_app">打开应用/链接</option>
+          </select>
+          <input
+            type="text"
+            value={testTarget}
+            onChange={(e) => setTestTarget(e.target.value)}
+            placeholder={testType === 'run_command' ? '例如：echo hello 或 ls' : '例如：https://www.example.com 或文件路径'}
+            className="flex-1 px-3 py-2 bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)] placeholder:text-[var(--color-text-tertiary)]"
+            onKeyDown={(e) => e.key === 'Enter' && handleTest()}
+          />
+          <button
+            onClick={handleTest}
+            disabled={testRunning || !testTarget.trim()}
+            className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white text-sm rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {testRunning && <Loader2 size={14} className="animate-spin" />}
+            执行
+          </button>
+        </div>
+        {testOutput && (
+          <pre className="text-xs text-[var(--color-text-secondary)] bg-[var(--color-main-bg)] border border-[var(--color-border)] rounded-lg p-3 max-h-40 overflow-y-auto whitespace-pre-wrap break-all font-mono">
+            {testOutput}
+          </pre>
+        )}
+      </div>
+
+      {/* 执行日志 */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium text-white flex items-center gap-2">
+            <ScrollText size={15} className="text-[var(--color-text-secondary)]" />
+            最近调用记录
+          </h3>
+          <button
+            onClick={loadLogs}
+            disabled={logsLoading}
+            className="text-xs text-[var(--color-text-secondary)] hover:text-white flex items-center gap-1 transition-colors"
+          >
+            <RefreshCw size={12} className={logsLoading ? 'animate-spin' : ''} />
+            刷新
+          </button>
+        </div>
+        {logs.length === 0 ? (
+          <p className="text-xs text-[var(--color-text-tertiary)] px-1">暂无调用记录</p>
+        ) : (
+          <div className="border border-[var(--color-border)] rounded-xl overflow-hidden divide-y divide-[var(--color-border)]">
+            {logs.map((log) => (
+              <div key={log.id} className="px-4 py-3 bg-[var(--color-card-bg)] flex items-start gap-3">
+                <span
+                  className={`mt-0.5 w-2 h-2 rounded-full flex-shrink-0 ${log.ok ? 'bg-[var(--color-success,#3fb950)]' : 'bg-[var(--color-danger,#f85149)]'}`}
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-medium text-white">
+                      {log.action_type === 'run_command' ? '执行命令' : '打开应用/链接'}
+                    </span>
+                    {log.risk_level === 'high' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30">
+                        高风险
+                      </span>
+                    )}
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-hover-bg)] text-[var(--color-text-secondary)]">
+                      {log.source === 'agent' ? '自主任务' : '手动'}
+                    </span>
+                    <span className="text-[10px] text-[var(--color-text-tertiary)] ml-auto">
+                      {formatTime(log.created_at)}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[var(--color-text-secondary)] mt-1 break-all font-mono">
+                    {log.action_detail}
+                  </p>
+                  <p className="text-xs text-[var(--color-text-tertiary)] mt-0.5 line-clamp-2">
+                    {log.result_summary}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ========== 自主执行与隐私（需求10）==========
+function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+        checked ? 'bg-blue-600' : 'bg-[var(--color-border)]'
+      } ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+    >
+      <span
+        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+          checked ? 'translate-x-6' : 'translate-x-1'
+        }`}
+      />
+    </button>
+  );
+}
+
+function AgentPrivacySettings() {
+  const { success: toastSuccess, error: toastError } = useToast();
+  const [settings, setSettings] = useState<AgentPrivacySettings | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [savingKey, setSavingKey] = useState('');
+  const [localModels, setLocalModels] = useState<string[]>([]);
+  const [localAvailable, setLocalAvailable] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [privRes, modelRes] = await Promise.all([
+          agentApi.getPrivacy(),
+          agentApi.getLocalModels(),
+        ]);
+        setSettings(privRes.settings);
+        setLocalModels(modelRes.models || []);
+        setLocalAvailable(modelRes.available);
+      } catch (e: any) {
+        toastError(e?.message || '加载自主执行设置失败');
+      } finally {
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const patch = async (p: Partial<AgentPrivacySettings>, key: string) => {
+    if (!settings) return;
+    const prev = settings;
+    setSettings({ ...settings, ...p });
+    setSavingKey(key);
+    try {
+      const res = await agentApi.savePrivacy(p);
+      setSettings(res.settings);
+      toastSuccess('设置已保存');
+    } catch (e: any) {
+      setSettings(prev);
+      toastError(e?.message || '保存失败，请重试');
+    } finally {
+      setSavingKey('');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20 text-[var(--color-text-muted)]">
+        <Loader2 className="animate-spin mr-2" size={18} /> 加载中…
+      </div>
+    );
+  }
+  if (!settings) return null;
+
+  const switches: Array<{
+    key: string;
+    title: string;
+    desc: string;
+    value: boolean;
+    patch: Partial<AgentPrivacySettings>;
+  }> = [
+    {
+      key: 'allow_web_search',
+      title: '允许联网搜索',
+      desc: '自主执行任务时可以上网搜索最新信息（通过 Tavily）。关闭后模型只能使用本地资料。',
+      value: settings.allow_web_search,
+      patch: { allow_web_search: !settings.allow_web_search },
+    },
+    {
+      key: 'allow_web_capture',
+      title: '允许抓取网页',
+      desc: '允许打开你给出的网页链接并提取正文。关闭后模型不能抓取任何网页内容。',
+      value: settings.allow_web_capture,
+      patch: { allow_web_capture: !settings.allow_web_capture },
+    },
+    {
+      key: 'allow_external_tools',
+      title: '允许调用外部软件',
+      desc: '允许任务打开本机应用或执行系统命令。具体每次是否执行，还受「外部调用」里的分级规则约束，高风险操作仍需你点确认。',
+      value: settings.allow_external_tools,
+      patch: { allow_external_tools: !settings.allow_external_tools },
+    },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+          <Bot size={20} className="text-blue-400" /> 自主执行与隐私
+        </h2>
+        <p className="text-sm text-[var(--color-text-muted)] mt-1">
+          控制追踪任务在「自己想办法完成目标」时，能使用哪些能力。所有笔记、知识库、记忆和执行记录都只存在本机，不会上传。
+        </p>
+      </div>
+
+      {/* 能力开关 */}
+      <div className="bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-xl divide-y divide-[var(--color-border)]">
+        {switches.map((s) => (
+          <div key={s.key} className="flex items-start justify-between gap-4 p-4">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-white">{s.title}</div>
+              <p className="text-xs text-[var(--color-text-muted)] mt-1 leading-relaxed">{s.desc}</p>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {savingKey === s.key && <Loader2 size={14} className="animate-spin text-[var(--color-text-muted)]" />}
+              <Toggle checked={s.value} onChange={() => patch(s.patch, s.key)} disabled={!!savingKey} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* 模型偏好 */}
+      <div className="bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-xl p-4 space-y-4">
+        <div>
+          <div className="text-sm font-medium text-white">执行模型偏好</div>
+          <p className="text-xs text-[var(--color-text-muted)] mt-1">
+            选择自主执行任务规划、思考时用哪个大脑。单个追踪任务仍可单独指定模型（优先于此设置）。
+          </p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={() => settings.model_preference !== 'default' && patch({ model_preference: 'default' }, 'model_preference')}
+            className={`text-left p-3 rounded-lg border transition-colors ${
+              settings.model_preference === 'default'
+                ? 'border-blue-500 bg-blue-500/10'
+                : 'border-[var(--color-border)] hover:border-[var(--color-text-muted)]'
+            }`}
+          >
+            <div className="text-sm font-medium text-white flex items-center gap-1.5">
+              <Globe size={14} /> 跟随默认
+            </div>
+            <p className="text-xs text-[var(--color-text-muted)] mt-1">使用设置页配置的默认大模型（云端），效果通常更好。</p>
+          </button>
+          <button
+            type="button"
+            onClick={() => settings.model_preference !== 'local' && patch({ model_preference: 'local' }, 'model_preference')}
+            className={`text-left p-3 rounded-lg border transition-colors ${
+              settings.model_preference === 'local'
+                ? 'border-green-500 bg-green-500/10'
+                : 'border-[var(--color-border)] hover:border-[var(--color-text-muted)]'
+            }`}
+          >
+            <div className="text-sm font-medium text-white flex items-center gap-1.5">
+              <Cpu size={14} /> 强制本地模型
+            </div>
+            <p className="text-xs text-[var(--color-text-muted)] mt-1">
+              全程用本机 Ollama 模型思考，数据不出本机、更私密；需要本机已启动 Ollama。
+            </p>
+          </button>
+        </div>
+
+        {settings.model_preference === 'local' && (
+          <div className="rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] p-3 space-y-2">
+            {localAvailable === false && (
+              <div className="flex items-start gap-2 text-xs text-amber-400">
+                <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+                <span>现在连不上本机 Ollama。请先启动 Ollama 并下载一个模型，否则任务无法运行。</span>
+              </div>
+            )}
+            {localAvailable === true && localModels.length > 0 && (
+              <div>
+                <label className="text-xs text-[var(--color-text-muted)]">本地模型（不选则自动用第一个）</label>
+                <select
+                  value={settings.local_model || ''}
+                  onChange={(e) => patch({ local_model: e.target.value }, 'local_model')}
+                  className="mt-1 w-full bg-[var(--color-card-bg)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-blue-500"
+                >
+                  <option value="">自动选择（{localModels[0]}）</option>
+                  {localModels.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {localAvailable === true && localModels.length === 0 && (
+              <div className="flex items-start gap-2 text-xs text-amber-400">
+                <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+                <span>Ollama 已启动，但还没有下载任何模型，请到「模型偏好」页下载一个本地模型。</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-start gap-2 rounded-lg bg-blue-500/10 border border-blue-500/20 p-3 text-xs text-blue-200">
+        <Shield size={14} className="flex-shrink-0 mt-0.5" />
+        <span>
+          隐私说明：任务过程中的搜索需要走外部搜索服务；抓取网页会直接访问对应网站；本地模型、知识库、笔记与记忆全部在本机运行和保存。关闭联网开关即可让任务完全离线工作。
+        </span>
+      </div>
+    </div>
+  );
+}

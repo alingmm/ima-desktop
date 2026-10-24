@@ -22,16 +22,28 @@ async function request<T>(endpoint: string, options: RequestOptions = {}, timeou
   } catch (err: any) {
     clearTimeout(timer);
     if (err?.name === 'AbortError') {
-      throw new Error('请求超时，请检查服务是否正常或网络连接');
+      throw new Error('请求超时，请检查网络后重试');
     }
-    throw new Error(err?.message || '网络请求失败');
+    // 把浏览器抛出的英文网络异常统一翻译成人话
+    const raw = String(err?.message || '');
+    if (/Failed to fetch|NetworkError|Network request failed|load failed/i.test(raw)) {
+      throw new Error('网络连接失败，请检查网络后重试');
+    }
+    throw new Error(raw || '网络连接失败，请检查网络后重试');
   } finally {
     clearTimeout(timer);
   }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Request failed' }));
-    const err = new Error(error.message || error.error || `HTTP ${response.status}`) as Error & { error?: string; code?: string };
+    const fallback = response.status >= 500
+      ? '服务暂时开小差了，请稍后重试'
+      : response.status === 404
+        ? '没找到相关内容'
+        : response.status === 403
+          ? '没有权限执行这个操作'
+          : '操作失败，请稍后重试';
+    const err = new Error(error.message || error.error || fallback) as Error & { error?: string; code?: string };
     err.error = error.error;
     err.code = error.error;
     throw err;
@@ -395,9 +407,10 @@ export const trackingApi = {
   getRuns: (projectId: string) =>
     request<{ runs: any[] }>(`/tracking/projects/${projectId}/runs`),
 
-  runProject: (projectId: string) =>
+  runProject: (projectId: string, opts?: { resume_run_id?: string; guidance?: string }) =>
     request<any>(`/tracking/projects/${projectId}/run`, {
       method: 'POST',
+      body: JSON.stringify(opts || {}),
     }),
 };
 
@@ -543,8 +556,236 @@ export const memoryApi = {
       body: JSON.stringify(data),
     }),
 
+  updateMemory: (id: string, data: { content?: string; category?: string; tags?: string[] }) =>
+    request<{ memory: any }>(`/memories/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
   deleteMemory: (id: string) =>
     request<{ success: boolean }>(`/memories/${id}`, {
       method: 'DELETE',
     }),
+
+  extractFromChat: (data: { user_text: string; assistant_text: string }) =>
+    request<{ saved: boolean; reason: string; memory: any }>('/memories/extract-from-chat', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+};
+
+export interface ExtractedFile {
+  filename: string;
+  ext: string;
+  size: number;
+  chars: number;
+  content: string;
+}
+
+// 外部文件上传/解析 APIs
+export const filesApi = {
+  /** 上传文件并在后端抽取文本（不保存，仅预览） */
+  extract: async (file: File): Promise<ExtractedFile> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/files/extract', { method: 'POST', body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.message || data.error || '文件解析失败');
+    }
+    return data as ExtractedFile;
+  },
+
+  /** 上传文件直接存为一条笔记 */
+  toNote: async (file: File, tags?: string): Promise<{ note: any }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (tags) formData.append('tags', tags);
+    const res = await fetch('/api/files/to-note', { method: 'POST', body: formData });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.message || data.error || '保存到笔记失败');
+    }
+    return data as { note: any };
+  },
+};
+
+// ========== 网页 / 视频链接抓取 APIs ==========
+
+export interface WebCaptureData {
+  kind?: 'web';
+  title: string;
+  content: string;
+  url: string;
+  final_url?: string;
+  description?: string;
+  site_name?: string;
+  char_count?: number;
+  truncated?: boolean;
+}
+
+export interface VideoCaptureData {
+  kind?: 'video';
+  platform: string;
+  title: string;
+  author?: string;
+  description?: string;
+  thumbnail?: string;
+  duration_seconds?: number;
+  url: string;
+  final_url?: string;
+  has_transcript: boolean;
+  note?: string;
+}
+
+export type CaptureData = WebCaptureData | VideoCaptureData;
+
+async function postJson<T>(path: string, body: any): Promise<T> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.message || data.error || '请求失败');
+  }
+  return data as T;
+}
+
+export const captureApi = {
+  /** 抓取普通网页 */
+  captureWeb: (url: string) => postJson<WebCaptureData>('/api/capture/web', { url }),
+
+  /** 抓取视频元信息 */
+  captureVideo: (url: string) => postJson<VideoCaptureData>('/api/capture/video', { url }),
+
+  /** 自动识别网页/视频并抓取 */
+  fetch: (url: string) => postJson<CaptureData>('/api/capture/fetch', { url }),
+
+  /** 大模型一键整理为结构化文档 */
+  organize: (params: {
+    kind: 'web' | 'video';
+    title: string;
+    content: string;
+    url: string;
+  }) => postJson<{ title: string; content: string; kind: string }>('/api/capture/organize', params),
+
+  /** 保存为笔记 */
+  toNote: (params: {
+    kind: 'web' | 'video';
+    title: string;
+    content: string;
+    url: string;
+    author?: string;
+    organized?: boolean;
+  }) => postJson<{ success: boolean; note: any; truncated?: boolean; char_count?: number }>('/api/capture/to-note', params),
+};
+
+// ========== 外部工具调用（权限分级） APIs ==========
+
+export type ToolActionType = 'open_app' | 'run_command';
+export type ToolPolicyLevel = 'auto' | 'confirm' | 'deny';
+
+export interface ToolPendingItem {
+  id: string;
+  action_type: ToolActionType;
+  action_detail: string;
+  risk_level: 'normal' | 'high';
+  risk_reason?: string;
+  source: 'manual' | 'agent';
+  run_id?: string;
+  project_id?: string;
+  created_at: string;
+}
+
+export interface ToolExecutionLogItem {
+  id: string;
+  action_type: ToolActionType;
+  action_detail: string;
+  level: ToolPolicyLevel;
+  risk_level: 'normal' | 'high';
+  ok: boolean;
+  result_summary: string;
+  source: 'manual' | 'agent';
+  duration_ms?: number;
+  created_at: string;
+}
+
+export const toolsApi = {
+  /** 获取权限分级 */
+  getPolicy: () => request<Record<ToolActionType, ToolPolicyLevel>>('/tools/policy'),
+
+  /** 保存权限分级 */
+  savePolicy: (policies: Partial<Record<ToolActionType, ToolPolicyLevel>>) =>
+    request<{ success: boolean; policies: Record<ToolActionType, ToolPolicyLevel> }>('/tools/policy', {
+      method: 'POST',
+      body: JSON.stringify({ policies }),
+    }),
+
+  /** 待确认列表 */
+  getPending: () => request<{ pending: ToolPendingItem[] }>('/tools/pending'),
+
+  /** 执行日志 */
+  getLogs: (limit = 50) => request<{ logs: ToolExecutionLogItem[] }>(`/tools/logs?limit=${limit}`),
+
+  /** 手动执行一次工具调用 */
+  run: (actionType: ToolActionType, target: string) =>
+    request<
+      | { status: 'executed'; ok: boolean; output: string; duration_ms: number }
+      | { status: 'pending'; pending: ToolPendingItem }
+    >('/tools/run', {
+      method: 'POST',
+      body: JSON.stringify({ action_type: actionType, target }),
+    }),
+
+  /** 批准/拒绝待确认项 */
+  confirm: (pendingId: string, approve: boolean, note?: string) =>
+    request<{ success: boolean; status: string; resumed: boolean; executed?: { ok: boolean; output: string } }>(
+      '/tools/confirm',
+      {
+        method: 'POST',
+        body: JSON.stringify({ pending_id: pendingId, approve, note }),
+      },
+    ),
+};
+
+// ========== 自主执行与隐私（需求10）==========
+export interface AgentPrivacySettings {
+  id?: string;
+  user_id?: string;
+  allow_web_search: boolean;
+  allow_web_capture: boolean;
+  allow_external_tools: boolean;
+  model_preference: 'default' | 'local';
+  local_model?: string;
+}
+
+export interface AgentTraceStats {
+  search_count?: number;
+  capture_count?: number;
+  knowledge_search_count?: number;
+  note_count?: number;
+  knowledge_write_count?: number;
+  memory_count?: number;
+  open_app_count?: number;
+  command_count?: number;
+  model_source?: 'cloud' | 'local';
+  local_model?: string;
+}
+
+export const agentApi = {
+  /** 读取自主执行与隐私设置 */
+  getPrivacy: () => request<{ settings: AgentPrivacySettings }>('/agent/privacy'),
+
+  /** 保存自主执行与隐私设置 */
+  savePrivacy: (patch: Partial<AgentPrivacySettings>) =>
+    request<{ settings: AgentPrivacySettings }>('/agent/privacy', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+
+  /** 查询本地模型可用性与已安装模型 */
+  getLocalModels: () =>
+    request<{ available: boolean; models: string[]; url?: string; error?: string }>('/agent/local-models'),
 };
