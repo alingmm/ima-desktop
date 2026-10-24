@@ -252,7 +252,12 @@ app.whenReady().then(async () => {
     createWindow(port);
   } catch (err) {
     console.error('Failed to start backend:', err);
-    // 显示错误窗口
+    // 后端启动失败时明确告知用户，避免只开一个空白窗口让人无从下手
+    const detail = err instanceof Error ? err.message : String(err);
+    dialog.showErrorBox(
+      '启动失败',
+      `应用后台服务没能启动，界面将无法加载。\n\n原因：${detail}\n\n请尝试重启应用；若反复出现，请把本提示截图反馈给开发者。`
+    );
     createWindow(0);
   }
 
